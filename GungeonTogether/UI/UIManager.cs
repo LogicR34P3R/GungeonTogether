@@ -1,6 +1,6 @@
 using UnityEngine;
-using GungeonTogether.Networking;
-using GungeonTogether.Networking.Steam;
+using GungeonTogether.Networking.Session;
+using GungeonTogether.Networking.Transport;
 using GungeonTogether.Systems.Logging;
 using Debug = GungeonTogether.Systems.Logging.Debug;
 using System.Collections.Generic;
@@ -144,7 +144,7 @@ namespace GungeonTogether.UI
 		private static void SubscribeEvents()
 		{
 			if (_subscribed) return;
-			SteamLobbyManager.Instance.OnPlayerListChanged += RefreshPlayerList;
+			SteamLobby.Instance.OnPlayerListChanged += RefreshPlayerList;
 			_subscribed = true;
 		}
 
@@ -157,12 +157,12 @@ namespace GungeonTogether.UI
 				UnityEngine.Object.Destroy(label.gameObject);
 			_playerLabels.Clear();
 
-			var members = SteamLobbyManager.Instance.GetLobbyMembers();
+			var members = SteamLobby.Instance.GetLobbyMembers();
 			float yOffset = 0f;
 			float labelHeight = 20f;
 			foreach (var id in members)
 			{
-				string name = SteamReflectionHelper.GetPlayerName(id);
+				string name = SteamIdentity.GetPlayerName(id);
 				var label = CreateLabel(null, _playerScrollPanel, null);
 				label.Text = name;
 				label.RelativePosition = new Vector3(5f, yOffset, 0f);
@@ -182,17 +182,17 @@ namespace GungeonTogether.UI
 		{
 			if (_statusLabel == null) return;
 
-			var lobby = SteamLobbyManager.Instance;
+			var lobby = SteamLobby.Instance;
 			string lobbyText = lobby.IsInLobby ? ("Lobby: " + lobby.CurrentLobbyId) : "Lobby: (none)";
-			string roleText = NetworkManager.Instance.IsHost ? "Role: Host" : (NetworkManager.Instance.IsClient ? "Role: Client" : "Role: (none)");
-			string connText = NetworkManager.Instance.IsConnected ? "Net: Connected" : "Net: Disconnected";
+			string roleText = NetworkSession.Instance.IsHost ? "Role: Host" : (NetworkSession.Instance.IsClient ? "Role: Client" : "Role: (none)");
+			string connText = NetworkSession.Instance.IsConnected ? "Net: Connected" : "Net: Disconnected";
 
 			_statusLabel.ModifyLocalizedText("GUNGEON TOGETHER\n" + lobbyText + "\n" + roleText + " | " + connText);
 
 			// Button enable states
-			if (_hostButton != null) _hostButton.IsEnabled = !NetworkManager.Instance.IsConnected;
+			if (_hostButton != null) _hostButton.IsEnabled = !NetworkSession.Instance.IsConnected;
 			if (_inviteButton != null) _inviteButton.IsEnabled = lobby.IsInLobby;
-			if (_leaveButton != null) _leaveButton.IsEnabled = lobby.IsInLobby || NetworkManager.Instance.IsConnected;
+			if (_leaveButton != null) _leaveButton.IsEnabled = lobby.IsInLobby || NetworkSession.Instance.IsConnected;
 		}
 
 		private static void SetVisible(bool visible)
@@ -203,20 +203,20 @@ namespace GungeonTogether.UI
 		private static void OnHostClicked(dfControl control, dfMouseEventArgs mouseEvent)
 		{
 			Debug.Log("[UI] Host Lobby clicked.");
-			SteamLobbyManager.Instance.CreateLobby(4);
+			SteamLobby.Instance.CreateLobby(4);
 		}
 
 		private static void OnInviteClicked(dfControl control, dfMouseEventArgs mouseEvent)
 		{
 			Debug.Log("[UI] Invite clicked.");
-			SteamLobbyManager.Instance.OpenInviteDialog();
+			SteamLobby.Instance.OpenInviteDialog();
 		}
 
 		private static void OnLeaveClicked(dfControl control, dfMouseEventArgs mouseEvent)
 		{
 			Debug.Log("[UI] Leave clicked.");
-			SteamLobbyManager.Instance.LeaveLobby();
-			NetworkManager.Instance.Shutdown();
+			SteamLobby.Instance.LeaveLobby();
+			NetworkSession.Instance.Shutdown();
 		}
 
 		private static dfLabel CreateLabel(dfGUIManager gui, dfControl parent, dfButton template)

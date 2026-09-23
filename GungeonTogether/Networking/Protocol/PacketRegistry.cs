@@ -4,11 +4,11 @@ using GungeonTogether.Networking.Packets;
 using GungeonTogether.Networking.Interfaces;
 using GungeonTogether.Networking.Enums;
 
-namespace GungeonTogether.Networking.Serialization
+namespace GungeonTogether.Networking.Protocol
 {
-    public static class PacketFactory
+    public static class PacketRegistry
     {
-        private static Dictionary<PacketType, Type> _packetTypes = new Dictionary<PacketType, Type>
+        private static readonly Dictionary<PacketType, Type> _packetTypes = new Dictionary<PacketType, Type>
         {
             { PacketType.PlayerPosition, typeof(PlayerPositionPacket) },
             { PacketType.ConnectionRequest, typeof(ConnectionRequestPacket) },

@@ -1,9 +1,9 @@
 using BepInEx;
 using UnityEngine;
-using GungeonTogether.Networking;
+using GungeonTogether.Networking.Session;
+using GungeonTogether.Networking.Replication;
 using GungeonTogether.Systems.Logging;
 using GungeonTogether.UI;
-using GungeonTogether.Networking.Sync;
 
 namespace GungeonTogether.Core
 {
@@ -24,16 +24,16 @@ namespace GungeonTogether.Core
                 Logger.LogInfo("Gungeon Together starting...");
 
                 // Initialise Networking
-                NetworkManager.Instance.Initialise();
+                NetworkSession.Instance.Initialise();
 
                 // Initialise UI
                 UIManager.Initialise();
                 
-                //initialise room sync
-                RoomSyncManager.Instance.gameObject.SetActive(true);
-                WorldSyncManager.Instance.gameObject.SetActive(true);
-                PlayerSyncManager.Instance.gameObject.SetActive(true);
-                LoadingSyncManager.Instance.gameObject.SetActive(true);           
+                //initialise room/world/player/loading sync
+                EnemyReplicator.Instance.gameObject.SetActive(true);
+                WorldStateReplicator.Instance.gameObject.SetActive(true);
+                PlayerReplicator.Instance.gameObject.SetActive(true);
+                LoadingStateReplicator.Instance.gameObject.SetActive(true);
 
                 Logger.LogInfo("Gungeon Together ready.");
             }
@@ -49,7 +49,7 @@ namespace GungeonTogether.Core
         {
             try
             {
-                NetworkManager.Instance.Update();
+                NetworkSession.Instance.Update();
                 UIManager.Update();
             }
             catch (System.Exception ex)

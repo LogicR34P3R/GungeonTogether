@@ -10,7 +10,7 @@ namespace GungeonTogether.Networking.Packets
         public PacketType Type => PacketType.EnemySpawn;
 
         public int EnemyId;
-        public string PrefabName;
+        public string EnemyGuid;
         public Vector2 Position;
         public float Rotation;
         public int Health;
@@ -18,7 +18,7 @@ namespace GungeonTogether.Networking.Packets
         public void Serialize(BinaryWriter writer)
         {
             writer.Write(EnemyId);
-            writer.Write(PrefabName ?? string.Empty);
+            writer.Write(EnemyGuid ?? string.Empty);
             writer.Write(Position.x);
             writer.Write(Position.y);
             writer.Write(Rotation);
@@ -28,7 +28,7 @@ namespace GungeonTogether.Networking.Packets
         public void Deserialize(BinaryReader reader)
         {
             EnemyId = reader.ReadInt32();
-            PrefabName = reader.ReadString();
+            EnemyGuid = reader.ReadString();
             Position = new Vector2(reader.ReadSingle(), reader.ReadSingle());
             Rotation = reader.ReadSingle();
             Health = reader.ReadInt32();

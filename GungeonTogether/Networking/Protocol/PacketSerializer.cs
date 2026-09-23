@@ -1,11 +1,9 @@
-using System;
 using System.IO;
-using GungeonTogether.Networking;
 using GungeonTogether.Networking.Interfaces;
 using GungeonTogether.Networking.Enums;
 using GungeonTogether.Systems.Logging;
 
-namespace GungeonTogether.Networking.Serialization
+namespace GungeonTogether.Networking.Protocol
 {
     public static class PacketSerializer
     {
@@ -26,14 +24,14 @@ namespace GungeonTogether.Networking.Serialization
             using (var reader = new BinaryReader(ms))
             {
                 PacketType type = (PacketType)reader.ReadByte();
-                INetworkPacket packet = PacketFactory.Create(type);
-                
+                INetworkPacket packet = PacketRegistry.Create(type);
+
                 if (packet != null)
                 {
                     packet.Deserialize(reader);
                     return packet;
                 }
-                
+
                 Debug.LogWarning($"Unknown packet type: {type}");
                 return null;
             }

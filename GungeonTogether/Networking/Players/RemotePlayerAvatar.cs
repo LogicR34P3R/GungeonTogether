@@ -1,4 +1,5 @@
 using UnityEngine;
+using GungeonTogether.Networking.Packets;
 
 namespace GungeonTogether.Networking
 {
@@ -8,6 +9,18 @@ namespace GungeonTogether.Networking
         private Transform _spriteTransform;
         private Vector3 _targetPosition;
         private bool _hasTarget;
+
+        // Last known stats for this remote player. Nothing renders these yet (no remote HUD
+        // exists), but they belong here - on the specific remote player they describe - rather
+        // than being applied to whichever PlayerController happens to be local.
+        public float Health { get; private set; }
+        public float MaxHealth { get; private set; }
+        public float Armor { get; private set; }
+        public float MaxArmor { get; private set; }
+        public int Ammo { get; private set; }
+        public int MaxAmmo { get; private set; }
+        public int CurrentGunIndex { get; private set; }
+        public string ActiveItemName { get; private set; }
 
         public static RemotePlayerAvatar Create(ulong steamId, Vector2 position, float rotation)
         {
@@ -58,6 +71,18 @@ namespace GungeonTogether.Networking
             {
                 _sprite.FlipX = flipX;
             }
+        }
+
+        public void ApplyState(PlayerStatePacket packet)
+        {
+            Health = packet.Health;
+            MaxHealth = packet.MaxHealth;
+            Armor = packet.Armor;
+            MaxArmor = packet.MaxArmor;
+            Ammo = packet.Ammo;
+            MaxAmmo = packet.MaxAmmo;
+            CurrentGunIndex = packet.CurrentGunIndex;
+            ActiveItemName = packet.ActiveItemName;
         }
 
         private void Update()
