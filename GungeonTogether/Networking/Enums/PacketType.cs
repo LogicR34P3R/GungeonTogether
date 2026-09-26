@@ -18,5 +18,7 @@ namespace GungeonTogether.Networking.Enums
         PlayerState = 13,
         LoadingState = 14,
         Heartbeat = 15,
+        RunSeed = 16,
+        LayoutHash = 17,
     }
 }

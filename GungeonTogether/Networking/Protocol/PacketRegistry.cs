@@ -25,6 +25,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.PlayerState, typeof(PlayerStatePacket) },
             { PacketType.LoadingState, typeof(LoadingStatePacket) },
             { PacketType.Heartbeat, typeof(HeartbeatPacket) },
+            { PacketType.RunSeed, typeof(RunSeedPacket) },
+            { PacketType.LayoutHash, typeof(LayoutHashPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

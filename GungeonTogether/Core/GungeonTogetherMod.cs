@@ -35,6 +35,7 @@ namespace GungeonTogether.Core
                 WorldStateReplicator.Instance.gameObject.SetActive(true);
                 PlayerReplicator.Instance.gameObject.SetActive(true);
                 LoadingStateReplicator.Instance.gameObject.SetActive(true);
+                DungeonSeedReplicator.Instance.gameObject.SetActive(true);
 
                 Logger.LogInfo("Gungeon Together ready.");
             }

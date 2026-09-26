@@ -32,7 +32,8 @@ namespace GungeonTogether.Networking.Session
         public static NetworkSession Instance => _instance ??= new NetworkSession();
 
         // 2: added Heartbeat packet; WorldState is now sent only on floor/foyer change.
-        public const int ProtocolVersion = 2;
+        // 3: added RunSeed and LayoutHash packets (shared dungeon seed).
+        public const int ProtocolVersion = 3;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -139,6 +140,7 @@ namespace GungeonTogether.Networking.Session
             NetworkEntityManager.Instance.Clear();
             WorldStateReplicator.Instance.ResetClientState();
             LoadingStateReplicator.Instance.ApplyLoadingState(false);
+            DungeonSeedReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -298,6 +300,14 @@ namespace GungeonTogether.Networking.Session
                     // Nothing to do - MarkPeerSeen already ran for this frame.
                     break;
 
+                case PacketType.RunSeed:
+                    if (IsClient) DungeonSeedReplicator.Instance.HandleRunSeed((RunSeedPacket)packet);
+                    break;
+
+                case PacketType.LayoutHash:
+                    if (IsClient) DungeonSeedReplicator.Instance.HandleLayoutHash((LayoutHashPacket)packet);
+                    break;
+
                 case PacketType.PlayerJoin:
                     var joinPacket = (PlayerJoinPacket)packet;
                     if (IsClient && joinPacket.PlayerId != _transport.LocalId)
@@ -397,6 +407,7 @@ namespace GungeonTogether.Networking.Session
             }, reliable: true);
 
             WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
+            DungeonSeedReplicator.Instance.SendCurrentSeedTo(transportId);
         }
 
         private void HandleConnectionAccepted(ulong senderId, ConnectionAcceptedPacket packet)
