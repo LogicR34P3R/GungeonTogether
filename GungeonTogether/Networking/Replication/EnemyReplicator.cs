@@ -11,8 +11,8 @@ using Debug = GungeonTogether.Systems.Logging.Debug;
 namespace GungeonTogether.Networking.Replication
 {
     /// <summary>
-    /// Host: detects room changes (which also re-broadcasts every enemy in the new room) and
-    /// periodically syncs active-enemy position/health/AI state. Client: spawns/updates/removes
+    /// Host: detects room changes and periodically syncs active enemies, diffing against the last
+    /// tick to send spawns (room entry or mid-room) and deaths. Client: spawns/updates/removes
     /// the corresponding remote AIActors.
     ///
     /// Replaces RoomSyncManager, which never actually worked: it read the current room via a
@@ -27,8 +27,8 @@ namespace GungeonTogether.Networking.Replication
         private string _currentRoomName = "";
         private float _nextStateSyncTime;
 
-        // Host side: ids synced on the previous tick. Any id missing from the next tick died (or
-        // otherwise left the room's active list) and gets an EnemyDeath broadcast.
+        // Host side: ids synced on the previous tick. An id new on the next tick gets an EnemySpawn;
+        // one missing from it died (or otherwise left the room's active list) and gets an EnemyDeath.
         private HashSet<int> _liveIds = new HashSet<int>();
         private HashSet<int> _currentIds = new HashSet<int>();
 
@@ -67,16 +67,9 @@ namespace GungeonTogether.Networking.Replication
             _liveIds.Clear();
             NetworkSession.Instance.Broadcast(new RoomChangePacket { RoomName = roomName });
 
-            SpawnAndBroadcastEnemies(room);
-        }
-
-        private void SpawnAndBroadcastEnemies(RoomHandler room)
-        {
-            List<AIActor> enemies = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
-            foreach (AIActor enemy in enemies)
-            {
-                BroadcastSpawn(enemy);
-            }
+            // With _liveIds empty, the next sync spawns every enemy in the room. Run it this frame
+            // rather than waiting out the interval.
+            _nextStateSyncTime = 0f;
         }
 
         private void BroadcastSpawn(AIActor enemy)
@@ -108,6 +101,11 @@ namespace GungeonTogether.Networking.Replication
 
                 int id = NetworkEntityManager.Instance.GetOrAssignId(enemy);
                 _currentIds.Add(id);
+
+                // Not synced last tick: either the room was just entered, or it appeared mid-room
+                // (reinforcement wave, summon). Either way the client doesn't have it yet.
+                if (!_liveIds.Contains(id)) BroadcastSpawn(enemy);
+
                 var packet = new EnemyStatePacket
                 {
                     EnemyId = id,
@@ -135,6 +133,9 @@ namespace GungeonTogether.Networking.Replication
 
         public void HandleSpawn(EnemySpawnPacket packet)
         {
+            // Never stack a second copy on an id we already have - AddRemote would orphan the first.
+            if (NetworkEntityManager.Instance.GetRemote(packet.EnemyId) != null) return;
+
             AIActor prefab = EnemyDatabase.GetOrLoadByGuid(packet.EnemyGuid);
             if (prefab == null)
             {
