@@ -21,6 +21,7 @@ namespace GungeonTogether.Core
             {
                 // Initialise Logging
                 GungeonTogether.Systems.Logging.Logger.Initialise(base.Logger);
+                BindLogLevel();
                 Logger.LogInfo("Gungeon Together starting...");
 
                 // Initialise Networking
@@ -43,6 +44,17 @@ namespace GungeonTogether.Core
                 Logger.LogError($"Stack trace: {ex.StackTrace}");
                 throw;
             }
+        }
+
+        private void BindLogLevel()
+        {
+            var logLevel = Config.Bind("Logging", "LogLevel", LogLevel.Info,
+                "Minimum GungeonTogether log level. Trace logs every broadcast packet; Debug adds handshake detail. " +
+                "Trace/Debug messages are sent to BepInEx as Debug, so BepInEx's own [Logging.Console]/[Logging.Disk] " +
+                "LogLevels must include Debug to see them.");
+
+            GungeonTogether.Systems.Logging.Logger.MinLevel = logLevel.Value;
+            logLevel.SettingChanged += (_, __) => GungeonTogether.Systems.Logging.Logger.MinLevel = logLevel.Value;
         }
 
         private void Update()

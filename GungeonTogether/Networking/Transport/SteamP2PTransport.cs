@@ -42,7 +42,7 @@ namespace GungeonTogether.Networking.Transport
                 _sessionFailCallback = Callback<P2PSessionConnectFail_t>.Create(OnSessionFail);
 
                 IsInitialised = true;
-                Debug.Log($"[Transport] Initialised. LocalId={LocalId}");
+                Debug.LogInfo($"[Transport] Initialised. LocalId={LocalId}");
             }
             catch (Exception ex)
             {
@@ -106,7 +106,7 @@ namespace GungeonTogether.Networking.Transport
         {
             ulong remoteId = data.m_steamIDRemote.m_SteamID;
             bool accepted = SteamNetworking.AcceptP2PSessionWithUser(data.m_steamIDRemote);
-            Debug.Log($"[Transport] Session request from {remoteId}, accepted={accepted}");
+            Debug.LogInfo($"[Transport] Session request from {remoteId}, accepted={accepted}");
             SessionRequested?.Invoke(remoteId);
         }
 

@@ -88,7 +88,7 @@ namespace GungeonTogether.Networking.Session
             if (Role != NetworkRole.None) Shutdown();
 
             Role = NetworkRole.Host;
-            Debug.Log("[Session] Started hosting.");
+            Debug.LogInfo("[Session] Started hosting.");
         }
 
         public void ConnectTo(ulong hostId)
@@ -97,7 +97,7 @@ namespace GungeonTogether.Networking.Session
 
             Role = NetworkRole.Client;
             _peers[hostId] = new PeerConnection(this, hostId);
-            Debug.Log($"[Session] Connecting to host {hostId}...");
+            Debug.LogInfo($"[Session] Connecting to host {hostId}...");
         }
 
         public void Shutdown()
@@ -137,7 +137,7 @@ namespace GungeonTogether.Networking.Session
                 _packetChannel.Send(peer.PeerId, payload, reliability);
                 count++;
             }
-            Debug.Log($"[Session] Broadcast {packet.Type} to {count} client(s) (excluded {excludeId}).");
+            Debug.LogTrace($"[Session] Broadcast {packet.Type} to {count} client(s) (excluded {excludeId}).");
         }
 
         /// <summary>Client-only: sends to the (single) host peer. No-op if not connected as a client.</summary>
@@ -292,7 +292,7 @@ namespace GungeonTogether.Networking.Session
             if (request.ProtocolVersion != ProtocolVersion)
             {
                 SendPacket(transportId, new ConnectionRejectedPacket { ProtocolVersion = ProtocolVersion }, reliable: true);
-                Debug.Log($"[Session] Rejected {transportId} - protocol mismatch.");
+                Debug.LogInfo($"[Session] Rejected {transportId} - protocol mismatch.");
                 return;
             }
 
@@ -327,7 +327,7 @@ namespace GungeonTogether.Networking.Session
             }
 
             peer.MarkConnected(Time.realtimeSinceStartup);
-            Debug.Log($"[Session] Connection accepted by host {senderId}.");
+            Debug.LogInfo($"[Session] Connection accepted by host {senderId}.");
         }
 
         private void HandleConnectionRejected(ulong senderId, ConnectionRejectedPacket packet)

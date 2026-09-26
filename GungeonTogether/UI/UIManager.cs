@@ -83,12 +83,12 @@ namespace GungeonTogether.UI
 			_panel.IsVisible = true;
 			_panel.Opacity = 1f;
 
-			Debug.Log($"[UI] Panel created: Position={_panel.RelativePosition}, Size={_panel.Width}x{_panel.Height}");
+			Debug.LogTrace($"[UI] Panel created: Position={_panel.RelativePosition}, Size={_panel.Width}x{_panel.Height}");
 
 			if (template != null)
 			{
 				_panel.Atlas = template.Atlas;
-				Debug.Log($"[UI] Panel atlas set from template");
+				Debug.LogTrace($"[UI] Panel atlas set from template");
 			}
 
 			_statusLabel = CreateLabel(gui, _panel, template);
@@ -100,7 +100,7 @@ namespace GungeonTogether.UI
 			_statusLabel.ProcessMarkup = true;
 			_statusLabel.ColorizeSymbols = true;
 
-			Debug.Log($"[UI] Status label created: Position={_statusLabel.RelativePosition}, Size={_statusLabel.Width}x{_statusLabel.Height}");
+			Debug.LogTrace($"[UI] Status label created: Position={_statusLabel.RelativePosition}, Size={_statusLabel.Width}x{_statusLabel.Height}");
 
 			// Layout buttons vertically within the panel
 			float currentY = _statusLabel.RelativePosition.y + _statusLabel.Height + 10f;
@@ -108,15 +108,15 @@ namespace GungeonTogether.UI
 			float buttonHeight = 40f;
 			float buttonSpacing = 10f;
 
-			Debug.Log($"[UI] Button layout: currentY={currentY}, buttonWidth={buttonWidth}, buttonHeight={buttonHeight}, spacing={buttonSpacing}");
+			Debug.LogTrace($"[UI] Button layout: currentY={currentY}, buttonWidth={buttonWidth}, buttonHeight={buttonHeight}, spacing={buttonSpacing}");
 
 		_hostButton = CreateButtonFromTemplate(gui, _panel, template, "GT_HostButton", "HOST LOBBY", 10f, currentY, buttonWidth, buttonHeight);
 		_hostButton.Click += OnHostClicked;
-		Debug.Log($"[UI] Host button created: Position={_hostButton.RelativePosition}, Size={_hostButton.Width}x{_hostButton.Height}, Visible={_hostButton.IsVisible}");
+		Debug.LogTrace($"[UI] Host button created: Position={_hostButton.RelativePosition}, Size={_hostButton.Width}x{_hostButton.Height}, Visible={_hostButton.IsVisible}");
 
 		_inviteButton = CreateButtonFromTemplate(gui, _panel, template, "GT_InviteButton", "INVITE", 10f + buttonWidth + buttonSpacing, currentY, buttonWidth, buttonHeight);
 		_inviteButton.Click += OnInviteClicked;
-		Debug.Log($"[UI] Invite button created: Position={_inviteButton.RelativePosition}, Size={_inviteButton.Width}x{_inviteButton.Height}, Visible={_inviteButton.IsVisible}");
+		Debug.LogTrace($"[UI] Invite button created: Position={_inviteButton.RelativePosition}, Size={_inviteButton.Width}x{_inviteButton.Height}, Visible={_inviteButton.IsVisible}");
 
 		currentY += buttonHeight + buttonSpacing;
 
@@ -284,7 +284,7 @@ namespace GungeonTogether.UI
 			btn.Width = width;
 			btn.Height = height;
 			
-			Debug.Log($"[UI] Button '{name}' created from scratch: Position={btn.RelativePosition}, Size={btn.Width}x{btn.Height}");
+			Debug.LogTrace($"[UI] Button '{name}' created from scratch: Position={btn.RelativePosition}, Size={btn.Width}x{btn.Height}");
 			
 			return btn;
 		}

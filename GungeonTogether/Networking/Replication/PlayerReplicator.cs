@@ -127,7 +127,7 @@ namespace GungeonTogether.Networking.Replication
 
             RemotePlayerAvatar player = RemotePlayerAvatar.Create(steamId, position, rotation);
             _remotePlayers[steamId] = player;
-            Debug.Log($"[PlayerReplicator] Spawned remote player {steamId} at {position}");
+            Debug.LogInfo($"[PlayerReplicator] Spawned remote player {steamId} at {position}");
         }
 
         public void UpdateRemotePlayer(ulong steamId, Vector2 position, float rotation, bool flipX = false)
@@ -161,7 +161,7 @@ namespace GungeonTogether.Networking.Replication
             {
                 Destroy(player.gameObject);
                 _remotePlayers.Remove(steamId);
-                Debug.Log($"[PlayerReplicator] Removed remote player {steamId}");
+                Debug.LogInfo($"[PlayerReplicator] Removed remote player {steamId}");
             }
         }
 

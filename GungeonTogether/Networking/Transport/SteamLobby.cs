@@ -70,7 +70,7 @@ namespace GungeonTogether.Networking.Transport
             SteamMatchmaking.LeaveLobby(new CSteamID(CurrentLobbyId));
             IsInLobby = false;
             CurrentLobbyId = 0;
-            Debug.Log("[Lobby] Left lobby.");
+            Debug.LogInfo("[Lobby] Left lobby.");
         }
 
         public void OpenInviteDialog()
@@ -116,7 +116,7 @@ namespace GungeonTogether.Networking.Transport
             SteamMatchmaking.SetLobbyJoinable(lobbyId, true);
             SteamFriends.SetRichPresence("connect", CurrentLobbyId.ToString());
 
-            Debug.Log($"[Lobby] Created lobby {CurrentLobbyId}.");
+            Debug.LogInfo($"[Lobby] Created lobby {CurrentLobbyId}.");
             OnPlayerListChanged?.Invoke();
             LobbyHostReady?.Invoke(CurrentLobbyId);
         }
@@ -132,7 +132,7 @@ namespace GungeonTogether.Networking.Transport
             ulong ownerId = SteamMatchmaking.GetLobbyOwner(lobbyId).m_SteamID;
             ulong localId = SteamIdentity.GetLocalSteamId();
 
-            Debug.Log($"[Lobby] Entered lobby {CurrentLobbyId}, owner={ownerId}, local={localId}");
+            Debug.LogInfo($"[Lobby] Entered lobby {CurrentLobbyId}, owner={ownerId}, local={localId}");
             OnPlayerListChanged?.Invoke();
 
             if (ownerId != 0 && ownerId != localId)
