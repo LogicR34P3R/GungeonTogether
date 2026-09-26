@@ -34,7 +34,8 @@ namespace GungeonTogether.Networking.Session
         // 2: added Heartbeat packet; WorldState is now sent only on floor/foyer change.
         // 3: added RunSeed and LayoutHash packets (shared dungeon seed).
         // 4: levels identified by scene name in WorldState/LayoutHash; added LevelTransition.
-        public const int ProtocolVersion = 4;
+        // 5: added RoomCleared; clients now run host enemies as puppets.
+        public const int ProtocolVersion = 5;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -142,6 +143,7 @@ namespace GungeonTogether.Networking.Session
             WorldStateReplicator.Instance.ResetClientState();
             LoadingStateReplicator.Instance.ApplyLoadingState(false);
             DungeonSeedReplicator.Instance.ResetSessionState();
+            EnemyReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -336,7 +338,11 @@ namespace GungeonTogether.Networking.Session
                     break;
 
                 case PacketType.RoomChange:
-                    NetworkEntityManager.Instance.Clear();
+                    if (IsClient) EnemyReplicator.Instance.HandleRoomChange((RoomChangePacket)packet);
+                    break;
+
+                case PacketType.RoomCleared:
+                    if (IsClient) EnemyReplicator.Instance.HandleRoomCleared((RoomClearedPacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

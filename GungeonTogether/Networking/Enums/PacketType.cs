@@ -21,5 +21,6 @@ namespace GungeonTogether.Networking.Enums
         RunSeed = 16,
         LayoutHash = 17,
         LevelTransition = 18,
+        RoomCleared = 19,
     }
 }
