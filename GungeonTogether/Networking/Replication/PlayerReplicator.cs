@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
-using GungeonTogether.Networking;
+using GungeonTogether.Networking.Players;
 using GungeonTogether.Networking.Packets;
 using GungeonTogether.Networking.Session;
 using GungeonTogether.Networking.Transport;

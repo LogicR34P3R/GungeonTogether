@@ -4,6 +4,7 @@ using UnityEngine;
 using GungeonTogether.Networking.Interfaces;
 using GungeonTogether.Networking.Enums;
 using GungeonTogether.Networking.Protocol;
+using GungeonTogether.Networking.Entities;
 using GungeonTogether.Networking.Packets;
 using GungeonTogether.Networking.Transport;
 using GungeonTogether.Networking.Replication;
@@ -115,6 +116,10 @@ namespace GungeonTogether.Networking.Session
 
             _peers.Clear();
             Role = NetworkRole.None;
+
+            // Otherwise remote avatars and client-side enemy copies linger, frozen, after leaving.
+            PlayerReplicator.Instance.ClearAll();
+            NetworkEntityManager.Instance.Clear();
         }
 
         public void SendPacket(ulong targetId, INetworkPacket packet, bool reliable = true)

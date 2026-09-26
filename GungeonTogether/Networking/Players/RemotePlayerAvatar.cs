@@ -1,7 +1,7 @@
 using UnityEngine;
 using GungeonTogether.Networking.Packets;
 
-namespace GungeonTogether.Networking
+namespace GungeonTogether.Networking.Players
 {
     public class RemotePlayerAvatar : MonoBehaviour
     {

@@ -4,8 +4,6 @@ namespace GungeonTogether.Networking.Session
     {
         Connecting,
         Connected,
-        Rejected,
-        TimedOut,
-        Disconnected
+        TimedOut
     }
 }

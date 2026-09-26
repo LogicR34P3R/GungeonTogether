@@ -34,8 +34,6 @@ namespace GungeonTogether.Networking.Session
             _lastSeen = now;
         }
 
-        public void MarkRejected() => State = ConnectionState.Rejected;
-
         public void Update(float now)
         {
             switch (State)

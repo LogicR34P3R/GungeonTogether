@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Dungeonator;
+using GungeonTogether.Networking.Entities;
 using GungeonTogether.Networking.Packets;
 using GungeonTogether.Networking.Session;
 using GungeonTogether.Systems;
