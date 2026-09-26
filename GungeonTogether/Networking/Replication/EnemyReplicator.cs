@@ -27,6 +27,11 @@ namespace GungeonTogether.Networking.Replication
         private string _currentRoomName = "";
         private float _nextStateSyncTime;
 
+        // Host side: ids synced on the previous tick. Any id missing from the next tick died (or
+        // otherwise left the room's active list) and gets an EnemyDeath broadcast.
+        private HashSet<int> _liveIds = new HashSet<int>();
+        private HashSet<int> _currentIds = new HashSet<int>();
+
         private void Update()
         {
             if (!NetworkSession.Instance.IsHost) return;
@@ -59,6 +64,7 @@ namespace GungeonTogether.Networking.Replication
             // A fresh room means every id assigned in the previous one is meaningless now -
             // clear on both sides so a late/duplicate packet can't resurrect a stale enemy id.
             NetworkEntityManager.Instance.Clear();
+            _liveIds.Clear();
             NetworkSession.Instance.Broadcast(new RoomChangePacket { RoomName = roomName });
 
             SpawnAndBroadcastEnemies(room);
@@ -92,12 +98,16 @@ namespace GungeonTogether.Networking.Replication
 
         private void SyncEnemyStates(RoomHandler room)
         {
+            _currentIds.Clear();
+
             List<AIActor> enemies = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
             foreach (AIActor enemy in enemies)
             {
-                if (enemy.healthHaver == null) continue;
+                // A dying enemy can still be in the active list for a frame or two - treat it as gone.
+                if (enemy == null || enemy.healthHaver == null || enemy.healthHaver.IsDead) continue;
 
                 int id = NetworkEntityManager.Instance.GetOrAssignId(enemy);
+                _currentIds.Add(id);
                 var packet = new EnemyStatePacket
                 {
                     EnemyId = id,
@@ -108,6 +118,17 @@ namespace GungeonTogether.Networking.Replication
                 };
                 NetworkSession.Instance.Broadcast(packet, reliable: false);
             }
+
+            foreach (int id in _liveIds)
+            {
+                if (_currentIds.Contains(id)) continue;
+                NetworkSession.Instance.Broadcast(new EnemyDeathPacket { EnemyId = id }, reliable: true);
+                Debug.Log($"[EnemyReplicator] Enemy {id} died, broadcast EnemyDeath.");
+            }
+
+            var swap = _liveIds;
+            _liveIds = _currentIds;
+            _currentIds = swap;
         }
 
         // ---- Client-side apply ----

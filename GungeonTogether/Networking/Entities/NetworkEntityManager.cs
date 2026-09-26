@@ -23,12 +23,13 @@ namespace GungeonTogether.Networking.Entities
 
         public void AddRemote(int id, GameObject go) => _remoteEntities[id] = go;
         public GameObject GetRemote(int id) => _remoteEntities.TryGetValue(id, out var go) ? go : null;
-        public void RemoveRemote(int id) { if (_remoteEntities.TryGetValue(id, out var go)) Object.Destroy(go); _remoteEntities.Remove(id); }
+        // go can already be Unity-destroyed here (e.g. the client killed its local copy first).
+        public void RemoveRemote(int id) { if (_remoteEntities.TryGetValue(id, out var go) && go != null) Object.Destroy(go); _remoteEntities.Remove(id); }
 
         /// <summary>Resets the registry - call on both host and client when the room changes, so ids don't outlive the room they were assigned in.</summary>
         public void Clear()
         {
-            foreach (var kv in _remoteEntities) Object.Destroy(kv.Value);
+            foreach (var kv in _remoteEntities) if (kv.Value != null) Object.Destroy(kv.Value);
             _remoteEntities.Clear();
             _entityIds.Clear();
             _nextId = 1;
