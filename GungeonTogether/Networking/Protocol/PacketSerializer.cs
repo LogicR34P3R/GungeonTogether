@@ -32,7 +32,7 @@ namespace GungeonTogether.Networking.Protocol
                     return packet;
                 }
 
-                Debug.LogWarning($"Unknown packet type: {type}");
+                Debug.LogWarningThrottled($"PacketSerializer.UnknownType:{type}", $"[PacketSerializer] Unknown packet type: {type}");
                 return null;
             }
         }

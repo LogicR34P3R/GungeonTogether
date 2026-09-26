@@ -77,7 +77,7 @@ namespace GungeonTogether.Networking.Transport
             bool ok = SteamNetworking.SendP2PPacket(target, data, (uint)data.Length, sendType, ChannelIndex);
             if (!ok)
             {
-                Debug.LogWarning($"[Transport] SendP2PPacket to {targetId} failed (size={data.Length}).");
+                Debug.LogWarningThrottled($"Transport.SendFailed:{targetId}", $"[Transport] SendP2PPacket to {targetId} failed (size={data.Length}).");
             }
             return ok;
         }

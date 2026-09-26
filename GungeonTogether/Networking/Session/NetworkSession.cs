@@ -358,6 +358,10 @@ namespace GungeonTogether.Networking.Session
                     {
                         PlayerReplicator.Instance.ApplyPlayerState((PlayerStatePacket)packet);
                     }
+                    else if (IsHost)
+                    {
+                        HandlePlayerState(senderId, (PlayerStatePacket)packet);
+                    }
                     break;
 
                 case PacketType.LoadingState:
@@ -396,7 +400,10 @@ namespace GungeonTogether.Networking.Session
                 return;
             }
 
-            var peer = new PeerConnection(this, transportId) { PlayerId = request.ClientId != 0 ? request.ClientId : transportId };
+            // The Steam sender id is authenticated and is the client's own SteamID, so it *is* the
+            // player id. request.ClientId is only the client's claim - trusting it would let one
+            // client impersonate another.
+            var peer = new PeerConnection(this, transportId) { PlayerId = transportId };
             peer.MarkConnected(Time.realtimeSinceStartup);
             _peers[transportId] = peer;
 
@@ -436,12 +443,24 @@ namespace GungeonTogether.Networking.Session
         {
             if (!_peers.TryGetValue(senderId, out var peer) || peer.State != ConnectionState.Connected)
             {
-                Debug.LogWarning($"[Session] Ignored position packet from unrecognised/unconnected sender {senderId}.");
+                Debug.LogWarningThrottled($"Session.IgnoredPosition:{senderId}", $"[Session] Ignored position packet from unrecognised/unconnected sender {senderId}.");
                 return;
             }
 
-            ulong playerId = peer.PlayerId != 0 ? peer.PlayerId : packet.PlayerId;
-            PlayerReplicator.Instance.UpdateRemotePlayer(playerId, packet.Position, packet.Rotation, packet.FlipX);
+            // Stamp the sender's real id before applying or relaying, so a client can't move
+            // someone else's avatar by writing their id into the packet.
+            packet.PlayerId = peer.PlayerId;
+            PlayerReplicator.Instance.UpdateRemotePlayer(packet.PlayerId, packet.Position, packet.Rotation, packet.FlipX);
+            Broadcast(packet, senderId, reliable: false);
+        }
+
+        private void HandlePlayerState(ulong senderId, PlayerStatePacket packet)
+        {
+            // IsFromKnownPeer already guaranteed a connected peer; same id stamping as positions.
+            if (!_peers.TryGetValue(senderId, out var peer)) return;
+
+            packet.PlayerId = peer.PlayerId;
+            PlayerReplicator.Instance.ApplyPlayerState(packet);
             Broadcast(packet, senderId, reliable: false);
         }
 

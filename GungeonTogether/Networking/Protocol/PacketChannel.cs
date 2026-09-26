@@ -136,7 +136,7 @@ namespace GungeonTogether.Networking.Protocol
             INetworkPacket packet = PacketSerializer.Deserialize(completePayload);
             if (packet == null)
             {
-                Debug.LogWarning($"[PacketChannel] Failed to deserialize packet from {senderId}.");
+                Debug.LogWarningThrottled($"PacketChannel.Deserialize:{senderId}", $"[PacketChannel] Failed to deserialize packet from {senderId}.");
                 return;
             }
 

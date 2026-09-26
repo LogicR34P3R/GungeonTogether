@@ -40,9 +40,9 @@ namespace GungeonTogether.Networking.Replication
                 BroadcastLocalPosition();
             }
 
-            // Only the host publishes authoritative stats today - matches the pre-Replication
-            // behavior; clients don't yet send their own stats anywhere.
-            if (NetworkSession.Instance.IsHost && now >= _nextStatsSendTime)
+            // Both roles publish their own stats: the host broadcasts, a client sends to the host,
+            // which applies them to that client's avatar and relays them to everyone else.
+            if (now >= _nextStatsSendTime)
             {
                 _nextStatsSendTime = now + StatsSendInterval;
                 BroadcastLocalStats();
@@ -91,7 +91,14 @@ namespace GungeonTogether.Networking.Replication
                 ActiveItemName = player.CurrentItem != null ? player.CurrentItem.name : ""
             };
 
-            NetworkSession.Instance.Broadcast(packet, reliable: false);
+            if (NetworkSession.Instance.IsHost)
+            {
+                NetworkSession.Instance.Broadcast(packet, reliable: false);
+            }
+            else if (NetworkSession.Instance.IsClient)
+            {
+                NetworkSession.Instance.SendToHost(packet, reliable: false);
+            }
         }
 
         private static ulong SteamworksLocalId() => SteamIdentity.GetLocalSteamId();
@@ -148,7 +155,7 @@ namespace GungeonTogether.Networking.Replication
 
             if (!_remotePlayers.TryGetValue(packet.PlayerId, out var player))
             {
-                Debug.LogWarning($"[PlayerReplicator] Got state for unknown player {packet.PlayerId} (not spawned yet).");
+                Debug.LogWarningThrottled($"PlayerReplicator.UnknownState:{packet.PlayerId}", $"[PlayerReplicator] Got state for unknown player {packet.PlayerId} (not spawned yet).");
                 return;
             }
 
