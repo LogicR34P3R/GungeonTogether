@@ -28,14 +28,17 @@ My paypal is llamerrr1@gmail.com if you actually want to (for some reason)
 
 # Features
 ## What works so far
+> [!NOTE]
+> The networking layer was rewritten on the `networking-rearchitecture` branch and hasn't been play-tested yet. Statuses below describe what the code does, not confirmed in-game behaviour.
+
 | System | Status | Notes |
 |:---:|:---:|:---:|
-| Steam invites/lobby system | 🟩 Done | Steam lobby creation and joining functional |
-| Steam P2P networking | 🟨 Working | Real connections and Steam invites working |
+| Steam invites/lobby system | 🟩 Done | Lobby creation, joining and invites; only lobby members can connect |
+| Steam P2P networking | 🟨 Working | Rewritten: direct Steamworks calls, packet sequencing and chunking, heartbeat and clean disconnects |
 | Basic UI | 🟨 Working | Modern multiplayer menu (Ctrl+P) available |
-| Player Synchronization | 🟨 Working | Basic position and animation sync implemented, development ongoing |
-| Enemy Synchronization | 🟥 Planned | Basic hooks into gameobjects |
-| Dungeon Synchronization | 🟥 Planned | Save and load system working |
+| Player Synchronization | 🟨 Working | Position and facing sync; host health/ammo/gun is sent but not shown yet |
+| Enemy Synchronization | 🟨 In progress | Host's enemies spawn, move and die on clients; client copies still run their own AI |
+| Dungeon Synchronization | 🟥 Planned | Save and load system working; floors aren't shared between players yet (clients only follow the host into the foyer) |
 | Singleplayer | 🏁 Finished | Yippeeee!!!!! |
 
 ## Planed for 1.0 release
