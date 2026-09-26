@@ -9,30 +9,98 @@ using Debug = GungeonTogether.Systems.Logging.Debug;
 namespace GungeonTogether.Networking.Replication
 {
     /// <summary>
-    /// Host: broadcasts floor/foyer transitions (plus a snapshot to each joining client).
-    /// Client: follows the host into the foyer, and teleports to the host once on join - after
-    /// that, the client moves freely. Position is deliberately NOT part of the change check:
-    /// it used to be, which re-sent world state every frame the host moved and teleported the
-    /// client onto the host each time, making it impossible for the client to move on its own.
+    /// Keeps the client on the same level as the host.
+    ///
+    /// Host: broadcasts a LevelTransition as soon as it starts loading a new floor (so the client
+    /// generates in parallel), and a WorldState once a load completes (plus a snapshot to each
+    /// joining client). Levels are identified by scene name: ETG's CurrentFloor is -1 on every
+    /// secret floor, so an index can't tell the Oubliette from the Abbey.
+    ///
+    /// Client: follows the host to its floor via DelayedLoadCustomLevel(sceneName), which handles
+    /// main and secret floors alike (LoadNextLevel would use the client's own nextLevelIndex /
+    /// InjectedLevelName and go wrong on any secret route); follows into the foyer via
+    /// ReturnToFoyer; teleports onto the host once on join if already on the same level. Position
+    /// is deliberately NOT part of the host's change check - it used to be, which teleported the
+    /// client onto the host every frame.
     /// </summary>
     public class WorldStateReplicator : MonoSingleton<WorldStateReplicator>
     {
         private const float PollInterval = 0.1f;
         private const float FoyerLoadTimeoutSeconds = 30f;
+        private const float FollowFadeSeconds = 0.5f;
+
+        // Scene names that aren't dungeon floors to follow with DelayedLoadCustomLevel - the foyer
+        // is reached via ReturnToFoyer instead (it resets the run, which a plain load wouldn't).
+        private const string FoyerSceneName = "tt_foyer";
 
         // Host side.
         private string _lastBroadcastKey = "";
+        private bool _hostWasLoading;
+        private GameLevelDefinition _definitionAtLoadStart;
+        private bool _transitionSent;
 
         // Client side.
         private WorldStatePacket _pendingPacket;
         private bool _applyQueued;
         private bool _hasInitialState;
         private bool _returningToFoyer;
+        private string _followTarget;
+        private bool _followQueued;
+
+        /// <summary>Scene name of the level we're on ("" in the foyer or before any level loads).</summary>
+        public static string CurrentSceneName()
+        {
+            GameManager gm = GameManager.Instance;
+            if (gm == null || gm.IsFoyer) return "";
+            GameLevelDefinition def = gm.GetLastLoadedLevelDefinition();
+            return def != null ? def.dungeonSceneName ?? "" : "";
+        }
 
         private void Update()
         {
             if (!NetworkSession.Instance.IsHost) return;
+            if (GameManager.Instance == null) return;
+
+            DetectHostTransitionStart();
             SyncHostWorldState();
+        }
+
+        // ---- Host ----
+
+        /// <summary>
+        /// GameManager assigns the target level definition near the start of its async load, before
+        /// generation - so watching it change while IsLoadingLevel is true tells us where the host
+        /// is going without patching every exit (elevator, secret floor, shortcut, pitfall...).
+        /// </summary>
+        private void DetectHostTransitionStart()
+        {
+            GameManager gm = GameManager.Instance;
+            bool loading = gm.IsLoadingLevel;
+
+            if (loading && !_hostWasLoading)
+            {
+                _definitionAtLoadStart = gm.GetLastLoadedLevelDefinition();
+                _transitionSent = false;
+            }
+            _hostWasLoading = loading;
+
+            if (!loading || _transitionSent) return;
+
+            GameLevelDefinition target = gm.GetLastLoadedLevelDefinition();
+            if (target == null || target == _definitionAtLoadStart) return;
+            _transitionSent = true;
+
+            if (!IsFollowableFloor(target)) return;
+
+            Debug.LogInfo($"[WorldStateReplicator] Host started loading {target.dungeonSceneName}; telling clients to follow.");
+            NetworkSession.Instance.Broadcast(new LevelTransitionPacket { SceneName = target.dungeonSceneName }, reliable: true);
+        }
+
+        private static bool IsFollowableFloor(GameLevelDefinition def)
+        {
+            return !string.IsNullOrEmpty(def.dungeonSceneName)
+                && !string.IsNullOrEmpty(def.dungeonPrefabPath) // prefab-less scenes: foyer, main menu, etc.
+                && def.dungeonSceneName != FoyerSceneName;
         }
 
         private void SyncHostWorldState()
@@ -40,18 +108,18 @@ namespace GungeonTogether.Networking.Replication
             PlayerController player = LocalPlayer();
             if (player == null) return;
 
-            // Mid-load, floor index and position can still describe the old level.
+            // Mid-load, level identity and position can still describe the old level.
             if (GameManager.Instance.IsLoadingLevel) return;
 
             bool isFoyer = GameManager.Instance.IsFoyer;
-            int floorIndex = GameManager.Instance.CurrentFloor;
-            string key = $"{isFoyer}|{floorIndex}";
+            string sceneName = CurrentSceneName();
+            string key = $"{isFoyer}|{sceneName}";
             if (key == _lastBroadcastKey) return;
             _lastBroadcastKey = key;
 
             string roomId = player.CurrentRoom != null ? player.CurrentRoom.GetRoomName() : "";
-            Debug.Log($"[WorldStateReplicator] Host moved to isFoyer={isFoyer}, floor={floorIndex}, room={roomId}");
-            NetworkSession.Instance.Broadcast(BuildPacket(player, isFoyer, floorIndex, roomId), reliable: true);
+            Debug.Log($"[WorldStateReplicator] Host arrived: isFoyer={isFoyer}, scene={sceneName}, room={roomId}");
+            NetworkSession.Instance.Broadcast(BuildPacket(player, isFoyer, sceneName, roomId), reliable: true);
         }
 
         /// <summary>Sends a snapshot of the current world state directly to one peer (used on join).</summary>
@@ -61,27 +129,27 @@ namespace GungeonTogether.Networking.Replication
             if (player == null) return;
 
             bool isFoyer = GameManager.Instance.IsFoyer;
-            int floorIndex = GameManager.Instance.CurrentFloor;
+            string sceneName = CurrentSceneName();
             string roomId = player.CurrentRoom != null ? player.CurrentRoom.GetRoomName() : "";
 
-            NetworkSession.Instance.SendPacket(targetId, BuildPacket(player, isFoyer, floorIndex, roomId), reliable: true);
-            Debug.Log($"[WorldStateReplicator] Sent initial world state to {targetId}: isFoyer={isFoyer}, floor={floorIndex}");
+            NetworkSession.Instance.SendPacket(targetId, BuildPacket(player, isFoyer, sceneName, roomId), reliable: true);
+            Debug.Log($"[WorldStateReplicator] Sent initial world state to {targetId}: isFoyer={isFoyer}, scene={sceneName}");
         }
 
-        private static WorldStatePacket BuildPacket(PlayerController player, bool isFoyer, int floorIndex, string roomId)
+        private static WorldStatePacket BuildPacket(PlayerController player, bool isFoyer, string sceneName, string roomId)
         {
             Vector3 pos = player.transform.position;
             return new WorldStatePacket
             {
                 IsFoyer = isFoyer,
-                FloorIndex = floorIndex,
+                SceneName = sceneName,
                 RoomIdentifier = roomId,
                 Position = new Vector2(pos.x, pos.y),
                 Rotation = player.transform.eulerAngles.z
             };
         }
 
-        // ---- Client-side apply ----
+        // ---- Client: session state ----
 
         /// <summary>Forget everything about the last session, so the next join gets its initial teleport.</summary>
         public void ResetClientState()
@@ -91,7 +159,71 @@ namespace GungeonTogether.Networking.Replication
             _applyQueued = false;
             _hasInitialState = false;
             _returningToFoyer = false;
+            _followTarget = null;
+            _followQueued = false;
         }
+
+        // ---- Client: follow the host between levels ----
+
+        public void HandleLevelTransition(LevelTransitionPacket packet)
+        {
+            if (string.IsNullOrEmpty(packet.SceneName)) return;
+            RequestFollow(packet.SceneName);
+        }
+
+        private void RequestFollow(string sceneName)
+        {
+            // Newest target wins; at most one waiting coroutine.
+            _followTarget = sceneName;
+            if (_followQueued) return;
+
+            _followQueued = true;
+            StartCoroutine(FollowWhenReady());
+        }
+
+        private IEnumerator FollowWhenReady()
+        {
+            // DelayedLoadCustomLevel is a no-op while we're mid-load, so wait our own load out first.
+            while (GameManager.Instance == null || GameManager.Instance.IsLoadingLevel)
+                yield return new WaitForSeconds(PollInterval);
+
+            string target = _followTarget;
+            _followTarget = null;
+            _followQueued = false;
+
+            if (string.IsNullOrEmpty(target) || CurrentSceneName() == target) yield break; // already there
+            BeginFollow(target);
+        }
+
+        private static void BeginFollow(string sceneName)
+        {
+            GameManager gm = GameManager.Instance;
+
+            // The generation seed has to be in place before the new floor generates. A client that
+            // joined mid-run (or is leaving the foyer right now) may still be holding it back.
+            DungeonSeedReplicator.Instance.ApplyPendingSeedNow();
+
+            // Same presentation as a normal elevator exit (ElevatorDepartureController), minus its
+            // DoMidgameSave - a co-op run can't be resumed solo anyway.
+            if (gm.AllPlayers != null)
+            {
+                foreach (PlayerController p in gm.AllPlayers)
+                {
+                    if (p != null) p.PrepareForSceneTransition();
+                }
+            }
+            if (Pixelator.Instance != null) Pixelator.Instance.FadeToBlack(FollowFadeSeconds);
+            if (GameUIRoot.Instance != null)
+            {
+                GameUIRoot.Instance.HideCoreUI(string.Empty);
+                GameUIRoot.Instance.ToggleLowerPanels(targetVisible: false, permanent: false, string.Empty);
+            }
+
+            Debug.LogInfo($"[WorldStateReplicator] Following host to {sceneName}.");
+            gm.DelayedLoadCustomLevel(FollowFadeSeconds, sceneName);
+        }
+
+        // ---- Client: world state ----
 
         public void ApplyWorldState(WorldStatePacket packet)
         {
@@ -137,17 +269,16 @@ namespace GungeonTogether.Networking.Replication
                 return;
             }
 
-            int currentFloor = GameManager.Instance.CurrentFloor;
-            if (currentFloor != packet.FloorIndex)
+            if (CurrentSceneName() != packet.SceneName)
             {
-                // ETG generates dungeon floors procedurally per run rather than loading them by
-                // index on demand, and no verified API exists here for "jump this client straight
-                // to floor N" - so cross-floor catch-up is a known gap rather than something faked.
-                Debug.LogWarning($"[WorldStateReplicator] Host is on floor {packet.FloorIndex}, we're on {currentFloor} - cross-floor sync isn't implemented yet, skipping teleport.");
+                // A LevelTransition should normally have got us there already; this covers joining
+                // mid-run and any transition we missed. The game spawns us at the level entrance,
+                // so no teleport afterwards.
+                RequestFollow(packet.SceneName);
                 return;
             }
 
-            // Same floor: only snap to the host on join. Afterwards the client moves on its own.
+            // Same level: only snap to the host on join. Afterwards the client moves on its own.
             if (isInitialState)
             {
                 TeleportLocalPlayer(packet.Position, packet.Rotation);

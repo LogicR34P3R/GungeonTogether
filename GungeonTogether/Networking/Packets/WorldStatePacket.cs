@@ -10,7 +10,9 @@ namespace GungeonTogether.Networking.Packets
         public PacketType Type => PacketType.WorldState;
 
         public bool IsFoyer;
-        public int FloorIndex;          // -1 if foyer
+        // Level identity by scene name (e.g. "tt_castle", "tt_sewer"), not floor index: ETG's
+        // CurrentFloor is -1 for every secret floor, so an index can't tell them apart.
+        public string SceneName;
         public string RoomIdentifier;   // room name or unique ID
         public Vector2 Position;
         public float Rotation;
@@ -18,7 +20,7 @@ namespace GungeonTogether.Networking.Packets
         public void Serialize(BinaryWriter writer)
         {
             writer.Write(IsFoyer);
-            writer.Write(FloorIndex);
+            writer.Write(SceneName ?? "");
             writer.Write(RoomIdentifier ?? "");
             writer.Write(Position.x);
             writer.Write(Position.y);
@@ -28,7 +30,7 @@ namespace GungeonTogether.Networking.Packets
         public void Deserialize(BinaryReader reader)
         {
             IsFoyer = reader.ReadBoolean();
-            FloorIndex = reader.ReadInt32();
+            SceneName = reader.ReadString();
             RoomIdentifier = reader.ReadString();
             Position = new Vector2(reader.ReadSingle(), reader.ReadSingle());
             Rotation = reader.ReadSingle();

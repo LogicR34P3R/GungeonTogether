@@ -27,6 +27,7 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.Heartbeat, typeof(HeartbeatPacket) },
             { PacketType.RunSeed, typeof(RunSeedPacket) },
             { PacketType.LayoutHash, typeof(LayoutHashPacket) },
+            { PacketType.LevelTransition, typeof(LevelTransitionPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

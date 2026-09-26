@@ -33,7 +33,8 @@ namespace GungeonTogether.Networking.Session
 
         // 2: added Heartbeat packet; WorldState is now sent only on floor/foyer change.
         // 3: added RunSeed and LayoutHash packets (shared dungeon seed).
-        public const int ProtocolVersion = 3;
+        // 4: levels identified by scene name in WorldState/LayoutHash; added LevelTransition.
+        public const int ProtocolVersion = 4;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -308,6 +309,10 @@ namespace GungeonTogether.Networking.Session
                     if (IsClient) DungeonSeedReplicator.Instance.HandleLayoutHash((LayoutHashPacket)packet);
                     break;
 
+                case PacketType.LevelTransition:
+                    if (IsClient) WorldStateReplicator.Instance.HandleLevelTransition((LevelTransitionPacket)packet);
+                    break;
+
                 case PacketType.PlayerJoin:
                     var joinPacket = (PlayerJoinPacket)packet;
                     if (IsClient && joinPacket.PlayerId != _transport.LocalId)
@@ -413,8 +418,10 @@ namespace GungeonTogether.Networking.Session
                 ProtocolVersion = ProtocolVersion
             }, reliable: true);
 
-            WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
+            // Seed first: the world state may send a mid-run joiner straight to the host's floor,
+            // and that floor must generate from the host's seed.
             DungeonSeedReplicator.Instance.SendCurrentSeedTo(transportId);
+            WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
         }
 
         private void HandleConnectionAccepted(ulong senderId, ConnectionAcceptedPacket packet)

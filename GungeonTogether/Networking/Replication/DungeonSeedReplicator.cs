@@ -101,6 +101,19 @@ namespace GungeonTogether.Networking.Replication
             Debug.Log($"[DungeonSeed] Received host run seed {packet.Seed}; applying once in the foyer.");
         }
 
+        /// <summary>
+        /// Client: apply a held-back host seed right now, regardless of where we are. Called just
+        /// before following the host to a new floor - it must be in place before that floor
+        /// generates, and once the load starts we're no longer "idle in the foyer" for Update to do it.
+        /// </summary>
+        public void ApplyPendingSeedNow()
+        {
+            if (_pendingClientSeed == 0) return;
+            ApplySeed(_pendingClientSeed);
+            Debug.LogInfo($"[DungeonSeed] Applied host run seed {_pendingClientSeed} before following the host.");
+            _pendingClientSeed = 0;
+        }
+
         private void ApplySeed(int seed)
         {
             GameManager.Instance.InitializeForRunWithSeed(seed);
@@ -172,7 +185,7 @@ namespace GungeonTogether.Networking.Replication
         {
             // Whichever side finishes loading second triggers the comparison.
             if (_hostLayout == null || _localLayout == null) return;
-            if (_hostLayout.FloorIndex != _localLayout.FloorIndex) return;
+            if (_hostLayout.SceneName != _localLayout.SceneName) return;
 
             LayoutHashPacket host = _hostLayout, local = _localLayout;
             _hostLayout = null;
@@ -180,15 +193,15 @@ namespace GungeonTogether.Networking.Replication
 
             if (host.Seed != local.Seed)
             {
-                Debug.LogWarning($"[DungeonSeed] Floor {local.FloorIndex}: seeds differ (host {host.Seed}, local {local.Seed}) - layouts aren't comparable.");
+                Debug.LogWarning($"[DungeonSeed] {local.SceneName}: seeds differ (host {host.Seed}, local {local.Seed}) - layouts aren't comparable.");
             }
             else if (host.Hash == local.Hash)
             {
-                Debug.LogInfo($"[DungeonSeed] Floor {local.FloorIndex}: layout matches host ({local.RoomCount} rooms, hash {local.Hash:X8}).");
+                Debug.LogInfo($"[DungeonSeed] {local.SceneName}: layout matches host ({local.RoomCount} rooms, hash {local.Hash:X8}).");
             }
             else
             {
-                Debug.LogWarning($"[DungeonSeed] Floor {local.FloorIndex}: layout DIFFERS from host despite same seed {local.Seed} " +
+                Debug.LogWarning($"[DungeonSeed] {local.SceneName}: layout DIFFERS from host despite same seed {local.Seed} " +
                                  $"(host {host.RoomCount} rooms/{host.Hash:X8}, local {local.RoomCount} rooms/{local.Hash:X8}). " +
                                  "Likely different save progress - diff the Debug-level room lists from both logs.");
             }
@@ -217,11 +230,11 @@ namespace GungeonTogether.Networking.Replication
                 hash = (hash ^ ';') * 16777619;
             }
 
-            Debug.Log($"[DungeonSeed] Floor {gm.CurrentFloor} seed {gm.CurrentRunSeed} rooms: {string.Join(" | ", entries.ToArray())}");
+            Debug.Log($"[DungeonSeed] {WorldStateReplicator.CurrentSceneName()} seed {gm.CurrentRunSeed} rooms: {string.Join(" | ", entries.ToArray())}");
 
             return new LayoutHashPacket
             {
-                FloorIndex = gm.CurrentFloor,
+                SceneName = WorldStateReplicator.CurrentSceneName(),
                 Seed = gm.CurrentRunSeed,
                 Hash = hash,
                 RoomCount = rooms.Count

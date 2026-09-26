@@ -12,14 +12,14 @@ namespace GungeonTogether.Networking.Packets
     {
         public PacketType Type => PacketType.LayoutHash;
 
-        public int FloorIndex;
+        public string SceneName;
         public int Seed;
         public uint Hash;
         public int RoomCount;
 
         public void Serialize(BinaryWriter writer)
         {
-            writer.Write(FloorIndex);
+            writer.Write(SceneName ?? "");
             writer.Write(Seed);
             writer.Write(Hash);
             writer.Write(RoomCount);
@@ -27,7 +27,7 @@ namespace GungeonTogether.Networking.Packets
 
         public void Deserialize(BinaryReader reader)
         {
-            FloorIndex = reader.ReadInt32();
+            SceneName = reader.ReadString();
             Seed = reader.ReadInt32();
             Hash = reader.ReadUInt32();
             RoomCount = reader.ReadInt32();

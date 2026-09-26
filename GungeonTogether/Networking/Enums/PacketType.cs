@@ -20,5 +20,6 @@ namespace GungeonTogether.Networking.Enums
         Heartbeat = 15,
         RunSeed = 16,
         LayoutHash = 17,
+        LevelTransition = 18,
     }
 }
