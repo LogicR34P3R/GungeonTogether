@@ -24,6 +24,7 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.WorldState, typeof(WorldStatePacket) },
             { PacketType.PlayerState, typeof(PlayerStatePacket) },
             { PacketType.LoadingState, typeof(LoadingStatePacket) },
+            { PacketType.Heartbeat, typeof(HeartbeatPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

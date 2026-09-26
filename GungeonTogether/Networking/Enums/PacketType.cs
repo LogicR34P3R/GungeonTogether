@@ -17,5 +17,6 @@ namespace GungeonTogether.Networking.Enums
         WorldState = 12,
         PlayerState = 13,
         LoadingState = 14,
+        Heartbeat = 15,
     }
 }

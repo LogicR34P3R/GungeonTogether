@@ -9,13 +9,25 @@ using Debug = GungeonTogether.Systems.Logging.Debug;
 namespace GungeonTogether.Networking.Replication
 {
     /// <summary>
-    /// Host: detects and broadcasts changes to the local player's floor/room/foyer/position.
-    /// Client: applies incoming world state to the local player, waiting out any in-progress
-    /// scene load first.
+    /// Host: broadcasts floor/foyer transitions (plus a snapshot to each joining client).
+    /// Client: follows the host into the foyer, and teleports to the host once on join - after
+    /// that, the client moves freely. Position is deliberately NOT part of the change check:
+    /// it used to be, which re-sent world state every frame the host moved and teleported the
+    /// client onto the host each time, making it impossible for the client to move on its own.
     /// </summary>
     public class WorldStateReplicator : MonoSingleton<WorldStateReplicator>
     {
-        private string _lastWorldState = "";
+        private const float PollInterval = 0.1f;
+        private const float FoyerLoadTimeoutSeconds = 30f;
+
+        // Host side.
+        private string _lastBroadcastKey = "";
+
+        // Client side.
+        private WorldStatePacket _pendingPacket;
+        private bool _applyQueued;
+        private bool _hasInitialState;
+        private bool _returningToFoyer;
 
         private void Update()
         {
@@ -28,16 +40,17 @@ namespace GungeonTogether.Networking.Replication
             PlayerController player = LocalPlayer();
             if (player == null) return;
 
+            // Mid-load, floor index and position can still describe the old level.
+            if (GameManager.Instance.IsLoadingLevel) return;
+
             bool isFoyer = GameManager.Instance.IsFoyer;
             int floorIndex = GameManager.Instance.CurrentFloor;
+            string key = $"{isFoyer}|{floorIndex}";
+            if (key == _lastBroadcastKey) return;
+            _lastBroadcastKey = key;
+
             string roomId = player.CurrentRoom != null ? player.CurrentRoom.GetRoomName() : "";
-            Vector3 pos = player.transform.position;
-
-            string currentState = $"{isFoyer}|{floorIndex}|{roomId}|{pos.x:F2}|{pos.y:F2}";
-            if (currentState == _lastWorldState) return;
-            _lastWorldState = currentState;
-
-            Debug.Log($"[WorldStateReplicator] Host world state changed: isFoyer={isFoyer}, floor={floorIndex}, room={roomId}, pos={pos}");
+            Debug.Log($"[WorldStateReplicator] Host moved to isFoyer={isFoyer}, floor={floorIndex}, room={roomId}");
             NetworkSession.Instance.Broadcast(BuildPacket(player, isFoyer, floorIndex, roomId), reliable: true);
         }
 
@@ -70,35 +83,54 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Client-side apply ----
 
-        public void ApplyWorldState(WorldStatePacket packet)
+        /// <summary>Forget everything about the last session, so the next join gets its initial teleport.</summary>
+        public void ResetClientState()
         {
-            if (LoadingStateReplicator.Instance.IsClientLoading)
-            {
-                StartCoroutine(DelayedApply(packet));
-            }
-            else
-            {
-                ApplyNow(packet);
-            }
+            StopAllCoroutines();
+            _pendingPacket = null;
+            _applyQueued = false;
+            _hasInitialState = false;
+            _returningToFoyer = false;
         }
 
-        private IEnumerator DelayedApply(WorldStatePacket packet)
+        public void ApplyWorldState(WorldStatePacket packet)
         {
-            while (LoadingStateReplicator.Instance.IsClientLoading)
-                yield return new WaitForSeconds(0.1f);
-            ApplyNow(packet);
+            // Keep only the newest packet and at most one waiting coroutine - an older state is
+            // never worth applying once a newer one has arrived.
+            _pendingPacket = packet;
+            if (_applyQueued) return;
+
+            _applyQueued = true;
+            StartCoroutine(ApplyWhenNotLoading());
+        }
+
+        private IEnumerator ApplyWhenNotLoading()
+        {
+            while (IsAnyoneLoading())
+                yield return new WaitForSeconds(PollInterval);
+
+            WorldStatePacket packet = _pendingPacket;
+            _pendingPacket = null;
+            _applyQueued = false;
+            if (packet != null) ApplyNow(packet);
         }
 
         private void ApplyNow(WorldStatePacket packet)
         {
+            bool isInitialState = !_hasInitialState;
+            _hasInitialState = true;
+
             if (packet.IsFoyer)
             {
                 if (!GameManager.Instance.IsFoyer)
                 {
+                    if (_returningToFoyer) return; // already on our way - don't trigger a second load
+
+                    _returningToFoyer = true;
                     GameManager.Instance.ReturnToFoyer();
-                    StartCoroutine(SetPositionAfterDelay(packet.Position, packet.Rotation, 0.5f));
+                    StartCoroutine(TeleportAfterFoyerLoad(packet.Position, packet.Rotation));
                 }
-                else
+                else if (isInitialState)
                 {
                     TeleportLocalPlayer(packet.Position, packet.Rotation);
                 }
@@ -110,19 +142,46 @@ namespace GungeonTogether.Networking.Replication
             {
                 // ETG generates dungeon floors procedurally per run rather than loading them by
                 // index on demand, and no verified API exists here for "jump this client straight
-                // to floor N" - so unlike same-floor position sync (safe, done below), cross-floor
-                // catch-up is a known gap rather than something faked with a guess.
+                // to floor N" - so cross-floor catch-up is a known gap rather than something faked.
                 Debug.LogWarning($"[WorldStateReplicator] Host is on floor {packet.FloorIndex}, we're on {currentFloor} - cross-floor sync isn't implemented yet, skipping teleport.");
                 return;
             }
 
-            TeleportLocalPlayer(packet.Position, packet.Rotation);
+            // Same floor: only snap to the host on join. Afterwards the client moves on its own.
+            if (isInitialState)
+            {
+                TeleportLocalPlayer(packet.Position, packet.Rotation);
+            }
         }
 
-        private IEnumerator SetPositionAfterDelay(Vector2 pos, float rot, float delay)
+        private IEnumerator TeleportAfterFoyerLoad(Vector2 pos, float rot)
         {
-            yield return new WaitForSeconds(delay);
-            TeleportLocalPlayer(pos, rot);
+            // ReturnToFoyer may not flip IsLoadingLevel on the very same frame, so give it a moment
+            // before polling, and cap the wait so a failed load can't leave this stuck forever.
+            yield return new WaitForSeconds(0.5f);
+
+            float deadline = Time.realtimeSinceStartup + FoyerLoadTimeoutSeconds;
+            while ((GameManager.Instance.IsLoadingLevel || !GameManager.Instance.IsFoyer)
+                   && Time.realtimeSinceStartup < deadline)
+            {
+                yield return new WaitForSeconds(PollInterval);
+            }
+
+            _returningToFoyer = false;
+            if (GameManager.Instance.IsFoyer)
+            {
+                TeleportLocalPlayer(pos, rot);
+            }
+            else
+            {
+                Debug.LogWarning("[WorldStateReplicator] Timed out waiting for the foyer to load; skipping teleport.");
+            }
+        }
+
+        private static bool IsAnyoneLoading()
+        {
+            return LoadingStateReplicator.Instance.IsClientLoading
+                || (GameManager.Instance != null && GameManager.Instance.IsLoadingLevel);
         }
 
         private static void TeleportLocalPlayer(Vector2 position, float rotation)

@@ -8,6 +8,7 @@ namespace GungeonTogether.Networking.Session
     {
         private const float ConnectRetryInterval = 1f;
         private const float TimeoutSeconds = 10f;
+        private const float ConnectTimeoutSeconds = 15f;
 
         private readonly NetworkSession _session;
 
@@ -17,6 +18,7 @@ namespace GungeonTogether.Networking.Session
 
         private float _lastSeen;
         private float _nextRetryTime;
+        private float _connectDeadline = -1f;
 
         public PeerConnection(NetworkSession session, ulong peerId)
         {
@@ -41,7 +43,19 @@ namespace GungeonTogether.Networking.Session
                 case ConnectionState.Connecting:
                     // Only the client side actively retries; the host just waits for a
                     // ConnectionRequest and responds to it.
-                    if (_session.Role == NetworkRole.Client && now >= _nextRetryTime)
+                    if (_session.Role != NetworkRole.Client) break;
+
+                    if (_connectDeadline < 0f) _connectDeadline = now + ConnectTimeoutSeconds;
+                    if (now >= _connectDeadline)
+                    {
+                        // Host never answered (gone, or ignoring us as a non-lobby-member) - give up
+                        // instead of retrying forever.
+                        State = ConnectionState.TimedOut;
+                        _session.HandlePeerTimeout(PeerId);
+                        break;
+                    }
+
+                    if (now >= _nextRetryTime)
                     {
                         _nextRetryTime = now + ConnectRetryInterval;
                         _session.SendConnectionRequest(PeerId);
@@ -49,9 +63,9 @@ namespace GungeonTogether.Networking.Session
                     break;
 
                 case ConnectionState.Connected:
-                    // No packet at all (position updates alone arrive every ~0.25s while
-                    // connected) for this long means the peer is gone even if Steam never
-                    // raised a session-failed callback for it.
+                    // No packet at all (NetworkSession sends a heartbeat every second even when
+                    // there's no gameplay traffic) for this long means the peer is gone even if
+                    // Steam never raised a session-failed callback for it.
                     if (now - _lastSeen > TimeoutSeconds)
                     {
                         State = ConnectionState.TimedOut;

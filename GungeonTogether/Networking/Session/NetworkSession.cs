@@ -31,7 +31,13 @@ namespace GungeonTogether.Networking.Session
         private static NetworkSession _instance;
         public static NetworkSession Instance => _instance ??= new NetworkSession();
 
-        public const int ProtocolVersion = 1;
+        // 2: added Heartbeat packet; WorldState is now sent only on floor/foyer change.
+        public const int ProtocolVersion = 2;
+
+        // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
+        // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
+        private const float HeartbeatInterval = 1f;
+        private float _nextHeartbeatTime;
 
         private readonly ISteamTransport _transport = SteamP2PTransport.Instance;
         private readonly PacketChannel _packetChannel;
@@ -82,6 +88,18 @@ namespace GungeonTogether.Networking.Session
             {
                 peer.Update(now);
             }
+
+            if (Role != NetworkRole.None && now >= _nextHeartbeatTime)
+            {
+                _nextHeartbeatTime = now + HeartbeatInterval;
+                foreach (var peer in _peers.Values)
+                {
+                    if (peer.State == ConnectionState.Connected)
+                    {
+                        SendPacket(peer.PeerId, new HeartbeatPacket(), reliable: false);
+                    }
+                }
+            }
         }
 
         public void StartHosting()
@@ -103,14 +121,13 @@ namespace GungeonTogether.Networking.Session
 
         public void Shutdown()
         {
-            if (Role == NetworkRole.Client)
+            // Both roles say goodbye: a client tells the host, and a host tells every client, so
+            // nobody has to sit out the timeout to notice.
+            foreach (var peer in _peers.Values)
             {
-                foreach (var peer in _peers.Values)
+                if (peer.State == ConnectionState.Connected)
                 {
-                    if (peer.State == ConnectionState.Connected)
-                    {
-                        SendPacket(peer.PeerId, new DisconnectPacket(), reliable: true);
-                    }
+                    SendPacket(peer.PeerId, new DisconnectPacket(), reliable: true);
                 }
             }
 
@@ -120,6 +137,20 @@ namespace GungeonTogether.Networking.Session
             // Otherwise remote avatars and client-side enemy copies linger, frozen, after leaving.
             PlayerReplicator.Instance.ClearAll();
             NetworkEntityManager.Instance.Clear();
+            WorldStateReplicator.Instance.ResetClientState();
+            LoadingStateReplicator.Instance.ApplyLoadingState(false);
+        }
+
+        /// <summary>
+        /// Client-only: the host is gone (timed out, disconnected, or refused us). Drop back to no
+        /// role and leave the lobby too - staying in it would leave the UI claiming a session that
+        /// no longer exists, with no way to reconnect from inside it.
+        /// </summary>
+        private void EndClientSession(string reason)
+        {
+            Debug.LogWarning($"[Session] Leaving session: {reason}");
+            Shutdown();
+            SteamLobby.Instance.LeaveLobby();
         }
 
         public void SendPacket(ulong targetId, INetworkPacket packet, bool reliable = true)
@@ -166,10 +197,15 @@ namespace GungeonTogether.Networking.Session
         {
             if (!_peers.Remove(peerId)) return;
 
-            Debug.LogWarning($"[Session] Peer {peerId} disconnected (timeout or session failure).");
+            Debug.LogWarning($"[Session] Peer {peerId} disconnected (disconnect, timeout, or session failure).");
             if (IsHost)
             {
                 PlayerReplicator.Instance.RemoveRemotePlayer(peerId);
+            }
+            else if (IsClient)
+            {
+                // A client's only peer is the host - losing it means the session is over.
+                EndClientSession($"lost connection to host {peerId}");
             }
         }
 
@@ -189,6 +225,13 @@ namespace GungeonTogether.Networking.Session
 
         private void HandlePacket(ulong senderId, INetworkPacket packet)
         {
+            if (!IsFromKnownPeer(senderId, packet))
+            {
+                // Trace, not Warning: a stray sender could otherwise flood the log at packet rate.
+                Debug.LogTrace($"[Session] Dropped {packet.Type} from unknown/unconnected sender {senderId}.");
+                return;
+            }
+
             try
             {
                 Route(senderId, packet);
@@ -196,6 +239,26 @@ namespace GungeonTogether.Networking.Session
             catch (Exception e)
             {
                 Debug.LogError($"[Session] Error handling packet from {senderId}: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// The transport accepts P2P sessions from anyone, so this is the gate: a host only takes a
+        /// ConnectionRequest from strangers and everything else from connected clients; a client only
+        /// takes packets from its host (whose handshake replies arrive while it's still Connecting).
+        /// </summary>
+        private bool IsFromKnownPeer(ulong senderId, INetworkPacket packet)
+        {
+            _peers.TryGetValue(senderId, out var peer);
+            switch (Role)
+            {
+                case NetworkRole.Host:
+                    return packet.Type == PacketType.ConnectionRequest
+                        || (peer != null && peer.State == ConnectionState.Connected);
+                case NetworkRole.Client:
+                    return peer != null;
+                default:
+                    return false;
             }
         }
 
@@ -228,7 +291,11 @@ namespace GungeonTogether.Networking.Session
                     break;
 
                 case PacketType.Disconnect:
-                    if (IsHost) HandlePeerTimeout(senderId);
+                    HandlePeerTimeout(senderId);
+                    break;
+
+                case PacketType.Heartbeat:
+                    // Nothing to do - MarkPeerSeen already ran for this frame.
                     break;
 
                 case PacketType.PlayerJoin:
@@ -247,7 +314,9 @@ namespace GungeonTogether.Networking.Session
                     }
                     else if (IsHost)
                     {
-                        HandlePeerTimeout(leavePacket.PlayerId);
+                        // Only ever the sender itself - trusting leavePacket.PlayerId would let any
+                        // client kick any other.
+                        HandlePeerTimeout(senderId);
                     }
                     break;
 
@@ -294,6 +363,16 @@ namespace GungeonTogether.Networking.Session
         {
             Debug.Log($"[Session] Host received ConnectionRequest from {transportId}, version={request.ProtocolVersion}, expected={ProtocolVersion}");
 
+            // Only players who joined our Steam lobby may connect - checked first, so strangers get
+            // no reply at all. Deliberately silent rather than a rejection: Steam's local member
+            // list can lag a lobby join slightly, and a real member's client re-sends its request
+            // every second, so ignoring it self-heals once the list catches up.
+            if (!SteamLobby.Instance.GetLobbyMembers().Contains(transportId))
+            {
+                Debug.Log($"[Session] Ignored ConnectionRequest from {transportId} - not a member of our lobby.");
+                return;
+            }
+
             if (request.ProtocolVersion != ProtocolVersion)
             {
                 SendPacket(transportId, new ConnectionRejectedPacket { ProtocolVersion = ProtocolVersion }, reliable: true);
@@ -326,8 +405,7 @@ namespace GungeonTogether.Networking.Session
 
             if (packet.ProtocolVersion != ProtocolVersion)
             {
-                Debug.LogWarning($"[Session] Protocol mismatch. Host={packet.ProtocolVersion} Local={ProtocolVersion}");
-                Shutdown();
+                EndClientSession($"protocol mismatch (host={packet.ProtocolVersion}, local={ProtocolVersion})");
                 return;
             }
 
@@ -340,7 +418,7 @@ namespace GungeonTogether.Networking.Session
             if (!_peers.TryGetValue(senderId, out _)) return;
 
             _peers.Remove(senderId);
-            Debug.LogWarning($"[Session] Connection rejected by host {senderId} (host protocol={packet.ProtocolVersion}, local={ProtocolVersion}). Halting connection attempts.");
+            EndClientSession($"rejected by host {senderId} (host protocol={packet.ProtocolVersion}, local={ProtocolVersion})");
         }
 
         private void HandlePlayerPosition(ulong senderId, PlayerPositionPacket packet)
