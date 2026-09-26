@@ -35,7 +35,8 @@ namespace GungeonTogether.Networking.Session
         // 3: added RunSeed and LayoutHash packets (shared dungeon seed).
         // 4: levels identified by scene name in WorldState/LayoutHash; added LevelTransition.
         // 5: added RoomCleared; clients now run host enemies as puppets.
-        public const int ProtocolVersion = 5;
+        // 6: added RoomSealState (door sync).
+        public const int ProtocolVersion = 6;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -345,6 +346,10 @@ namespace GungeonTogether.Networking.Session
                     if (IsClient) EnemyReplicator.Instance.HandleRoomCleared((RoomClearedPacket)packet);
                     break;
 
+                case PacketType.RoomSealState:
+                    if (IsClient) EnemyReplicator.Instance.HandleRoomSealState((RoomSealStatePacket)packet);
+                    break;
+
                 case PacketType.EnemySpawn:
                     if (IsClient) EnemyReplicator.Instance.HandleSpawn((EnemySpawnPacket)packet);
                     break;
@@ -428,6 +433,7 @@ namespace GungeonTogether.Networking.Session
             // and that floor must generate from the host's seed.
             DungeonSeedReplicator.Instance.SendCurrentSeedTo(transportId);
             WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
+            EnemyReplicator.Instance.SendCurrentRoomStateTo(transportId);
         }
 
         private void HandleConnectionAccepted(ulong senderId, ConnectionAcceptedPacket packet)

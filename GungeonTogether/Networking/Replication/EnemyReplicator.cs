@@ -25,7 +25,7 @@ namespace GungeonTogether.Networking.Replication
     /// spawned as puppets: AI off, ignored for room clear, immune to local damage - so destroying
     /// one never fires the client's own clear/wave/reward logic, and the client can't kill one
     /// locally and drop loot. The host's RoomCleared recharges the client's active items; there is
-    /// no client room-clear loot and client doors never seal (both deliberate first-version choices).
+    /// no client room-clear loot (a deliberate first-version choice). Client doors mirror the host's via RoomSealState.
     ///
     /// Boss rooms and bosses are left entirely alone on both sides for now: each player fights its
     /// own boss.
@@ -46,9 +46,16 @@ namespace GungeonTogether.Networking.Replication
         private HashSet<int> _liveIds = new HashSet<int>();
         private HashSet<int> _currentIds = new HashSet<int>();
 
+        // Host side: the room whose doors are sealed right now, for a joining client's snapshot.
+        private string _hostSealedRoom;
+
         // Client side.
         private string _hostRoomName = "";
         private readonly List<EnemySpawnPacket> _pendingSpawns = new List<EnemySpawnPacket>();
+        // Seal states that arrived while we were still loading onto the floor (newest per room).
+        private readonly Dictionary<string, bool> _pendingSealStates = new Dictionary<string, bool>();
+        // Rooms we sealed because the host did - unsealed again if the session ends mid-fight.
+        private readonly List<RoomHandler> _networkSealedRooms = new List<RoomHandler>();
 
         private GameManager _subscribedTo;
 
@@ -89,12 +96,18 @@ namespace GungeonTogether.Networking.Replication
             {
                 RoomHandler captured = room;
                 room.OnEnemiesCleared = (Action)Delegate.Combine(room.OnEnemiesCleared, new Action(() => OnHostRoomCleared(captured)));
+                room.OnSealChanged = (Action<bool>)Delegate.Combine(room.OnSealChanged, new Action<bool>(isSealed => OnHostRoomSealChanged(captured, isSealed)));
             }
+
+            // Rooms from the previous level are gone.
+            _hostSealedRoom = null;
+            _networkSealedRooms.Clear();
 
             if (NetworkSession.Instance.IsClient)
             {
                 SuppressNativeFights(gm);
                 ReplayPendingSpawns();
+                ReplayPendingSealStates();
             }
         }
 
@@ -162,6 +175,26 @@ namespace GungeonTogether.Networking.Replication
             string roomName = room.GetRoomName();
             NetworkSession.Instance.Broadcast(new RoomClearedPacket { RoomName = roomName }, reliable: true);
             Debug.Log($"[EnemyReplicator] Host cleared room {roomName}.");
+        }
+
+        private void OnHostRoomSealChanged(RoomHandler room, bool isSealed)
+        {
+            // The client's own SealRoom/UnsealRoom calls fire this too - only the host reports.
+            if (!NetworkSession.Instance.IsHost) return;
+
+            string roomName = room.GetRoomName();
+            if (isSealed) _hostSealedRoom = roomName;
+            else if (_hostSealedRoom == roomName) _hostSealedRoom = null;
+
+            NetworkSession.Instance.Broadcast(new RoomSealStatePacket { RoomName = roomName, Sealed = isSealed }, reliable: true);
+            Debug.Log($"[EnemyReplicator] Host room {roomName} {(isSealed ? "sealed" : "unsealed")}.");
+        }
+
+        /// <summary>Host: a joining client learns about a fight already in progress.</summary>
+        public void SendCurrentRoomStateTo(ulong targetId)
+        {
+            if (_hostSealedRoom == null) return;
+            NetworkSession.Instance.SendPacket(targetId, new RoomSealStatePacket { RoomName = _hostSealedRoom, Sealed = true }, reliable: true);
         }
 
         private void BroadcastSpawn(AIActor enemy)
@@ -356,6 +389,52 @@ namespace GungeonTogether.Networking.Replication
             NetworkEntityManager.Instance.RemoveRemote(packet.EnemyId);
         }
 
+        public void HandleRoomSealState(RoomSealStatePacket packet)
+        {
+            GameManager gm = GameManager.Instance;
+            if (gm == null || gm.IsLoadingLevel || gm.Dungeon == null)
+            {
+                _pendingSealStates[packet.RoomName ?? ""] = packet.Sealed;
+                return;
+            }
+            ApplySealState(packet.RoomName, packet.Sealed);
+        }
+
+        private void ReplayPendingSealStates()
+        {
+            if (_pendingSealStates.Count == 0) return;
+            var states = new Dictionary<string, bool>(_pendingSealStates);
+            _pendingSealStates.Clear();
+            foreach (var kv in states) ApplySealState(kv.Key, kv.Value);
+        }
+
+        /// <summary>
+        /// Mirrors the host's doors. The client's own rooms never seal by themselves (no local
+        /// RoomClear enemies), so this is the only thing locking them. A client outside the room
+        /// when it seals is locked out until the host clears it - same doors, same rules.
+        /// </summary>
+        private void ApplySealState(string roomName, bool isSealed)
+        {
+            RoomHandler room = FindRoomByName(roomName);
+            if (room == null)
+            {
+                Debug.Log($"[EnemyReplicator] Seal state for unknown room {roomName} (layout mismatch?) - ignored.");
+                return;
+            }
+            if (IsBossRoom(room)) return; // the client runs its own boss room, doors included
+
+            if (isSealed && !room.IsSealed)
+            {
+                room.SealRoom();
+                if (!_networkSealedRooms.Contains(room)) _networkSealedRooms.Add(room);
+            }
+            else if (!isSealed && room.IsSealed)
+            {
+                room.UnsealRoom();
+                _networkSealedRooms.Remove(room);
+            }
+        }
+
         public void HandleRoomCleared(RoomClearedPacket packet)
         {
             RoomHandler room = FindRoomByName(packet.RoomName);
@@ -366,17 +445,43 @@ namespace GungeonTogether.Networking.Replication
             PlayerController player = GameManager.Instance != null ? GameManager.Instance.PrimaryPlayer : null;
             if (player != null) player.OnRoomCleared();
 
-            if (room != null && room.IsSealed) room.UnsealRoom();
+            // Normally a RoomSealState(false) handles this; belt and braces in case it was missed.
+            if (room != null && room.IsSealed)
+            {
+                room.UnsealRoom();
+                _networkSealedRooms.Remove(room);
+            }
             Debug.Log($"[EnemyReplicator] Host cleared room {packet.RoomName}.");
         }
 
         /// <summary>Called from NetworkSession.Shutdown.</summary>
         public void ResetSessionState()
         {
+            // Don't leave the client locked in a room whose fight will never finish: the host that
+            // was going to clear it is gone.
+            GameManager gm = GameManager.Instance;
+            if (gm != null && !gm.IsLoadingLevel)
+            {
+                foreach (RoomHandler room in _networkSealedRooms)
+                {
+                    try
+                    {
+                        if (room != null && room.IsSealed) room.UnsealRoom();
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning($"[EnemyReplicator] Failed to unseal a room on session end: {e.Message}");
+                    }
+                }
+            }
+            _networkSealedRooms.Clear();
+
             _currentRoomName = "";
             _liveIds.Clear();
+            _hostSealedRoom = null;
             _hostRoomName = "";
             _pendingSpawns.Clear();
+            _pendingSealStates.Clear();
         }
     }
 }

@@ -29,6 +29,7 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.LayoutHash, typeof(LayoutHashPacket) },
             { PacketType.LevelTransition, typeof(LevelTransitionPacket) },
             { PacketType.RoomCleared, typeof(RoomClearedPacket) },
+            { PacketType.RoomSealState, typeof(RoomSealStatePacket) },
         };
 
         public static INetworkPacket Create(PacketType type)
