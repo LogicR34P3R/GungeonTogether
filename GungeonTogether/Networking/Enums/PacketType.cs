@@ -27,5 +27,8 @@ namespace GungeonTogether.Networking.Enums
         LootTaken = 22,
         ConsumablesState = 23,
         ConsumablesDelta = 24,
+        ChestSpawn = 25,
+        ChestInteract = 26,
+        ChestState = 27,
     }
 }

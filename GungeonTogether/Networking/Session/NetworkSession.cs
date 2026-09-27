@@ -38,7 +38,8 @@ namespace GungeonTogether.Networking.Session
         // 6: added RoomSealState (door sync).
         // 7: added LootSpawn/LootTaken (loot sync).
         // 8: added ConsumablesState/ConsumablesDelta (shared money/keys).
-        public const int ProtocolVersion = 8;
+        // 9: added ChestSpawn/ChestInteract/ChestState (host-authoritative chests).
+        public const int ProtocolVersion = 9;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -369,6 +370,18 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.ConsumablesDelta:
                     if (IsHost) ConsumablesReplicator.Instance.HandleDelta((ConsumablesDeltaPacket)packet);
+                    break;
+
+                case PacketType.ChestSpawn:
+                    if (IsClient) ChestReplicator.Instance.HandleSpawn((ChestSpawnPacket)packet);
+                    break;
+
+                case PacketType.ChestInteract:
+                    if (IsHost) ChestReplicator.Instance.HandleInteract((ChestInteractPacket)packet);
+                    break;
+
+                case PacketType.ChestState:
+                    if (IsClient) ChestReplicator.Instance.HandleState((ChestStatePacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

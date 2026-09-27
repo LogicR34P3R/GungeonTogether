@@ -38,18 +38,9 @@ namespace GungeonTogether.Core
                 DungeonSeedReplicator.Instance.gameObject.SetActive(true);
                 LootReplicator.Instance.gameObject.SetActive(true);
                 ConsumablesReplicator.Instance.gameObject.SetActive(true);
+                ChestReplicator.Instance.gameObject.SetActive(true);
 
-                // Runtime patches into game code (GungeonTogether.Patches) - only where the game
-                // offers no public hook, e.g. observing LootEngine spawns for loot sync. Isolated so
-                // a patch that no longer matches the game only costs that feature, not the whole mod.
-                try
-                {
-                    new HarmonyLib.Harmony("com.llamerrr.gungeontogether").PatchAll(typeof(GungeonTogetherMod).Assembly);
-                }
-                catch (System.Exception ex)
-                {
-                    Logger.LogError($"Harmony patching failed - loot sync will not work: {ex}");
-                }
+                ApplyHarmonyPatches();
 
                 Logger.LogInfo("Gungeon Together ready.");
             }
@@ -59,6 +50,32 @@ namespace GungeonTogether.Core
                 Logger.LogError($"Stack trace: {ex.StackTrace}");
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Runtime patches into game code (GungeonTogether.Patches) - only where the game offers no
+        /// public hook. Applied one patch class at a time rather than with PatchAll, which stops at
+        /// the first failure: a patch that no longer matches the game then only costs its own feature.
+        /// </summary>
+        private void ApplyHarmonyPatches()
+        {
+            var harmony = new HarmonyLib.Harmony("com.llamerrr.gungeontogether");
+            int applied = 0, failed = 0;
+            foreach (System.Type type in HarmonyLib.AccessTools.GetTypesFromAssembly(typeof(GungeonTogetherMod).Assembly))
+            {
+                if (type.GetCustomAttributes(typeof(HarmonyLib.HarmonyPatch), false).Length == 0) continue;
+                try
+                {
+                    harmony.CreateClassProcessor(type).Patch();
+                    applied++;
+                }
+                catch (System.Exception ex)
+                {
+                    failed++;
+                    Logger.LogError($"Harmony patch {type.Name} failed - its feature will not work: {ex.Message}");
+                }
+            }
+            Logger.LogInfo($"Harmony: {applied} patch(es) applied, {failed} failed.");
         }
 
         private void BindLogLevel()

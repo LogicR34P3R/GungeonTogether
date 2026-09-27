@@ -34,6 +34,9 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.LootTaken, typeof(LootTakenPacket) },
             { PacketType.ConsumablesState, typeof(ConsumablesStatePacket) },
             { PacketType.ConsumablesDelta, typeof(ConsumablesDeltaPacket) },
+            { PacketType.ChestSpawn, typeof(ChestSpawnPacket) },
+            { PacketType.ChestInteract, typeof(ChestInteractPacket) },
+            { PacketType.ChestState, typeof(ChestStatePacket) },
         };
 
         public static INetworkPacket Create(PacketType type)
