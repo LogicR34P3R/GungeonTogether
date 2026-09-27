@@ -37,6 +37,7 @@ namespace GungeonTogether.Core
                 LoadingStateReplicator.Instance.gameObject.SetActive(true);
                 DungeonSeedReplicator.Instance.gameObject.SetActive(true);
                 LootReplicator.Instance.gameObject.SetActive(true);
+                ConsumablesReplicator.Instance.gameObject.SetActive(true);
 
                 // Runtime patches into game code (GungeonTogether.Patches) - only where the game
                 // offers no public hook, e.g. observing LootEngine spawns for loot sync. Isolated so

@@ -25,5 +25,7 @@ namespace GungeonTogether.Networking.Enums
         RoomSealState = 20,
         LootSpawn = 21,
         LootTaken = 22,
+        ConsumablesState = 23,
+        ConsumablesDelta = 24,
     }
 }

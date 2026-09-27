@@ -32,6 +32,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.RoomSealState, typeof(RoomSealStatePacket) },
             { PacketType.LootSpawn, typeof(LootSpawnPacket) },
             { PacketType.LootTaken, typeof(LootTakenPacket) },
+            { PacketType.ConsumablesState, typeof(ConsumablesStatePacket) },
+            { PacketType.ConsumablesDelta, typeof(ConsumablesDeltaPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

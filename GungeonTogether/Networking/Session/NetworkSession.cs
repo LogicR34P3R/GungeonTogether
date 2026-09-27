@@ -37,7 +37,8 @@ namespace GungeonTogether.Networking.Session
         // 5: added RoomCleared; clients now run host enemies as puppets.
         // 6: added RoomSealState (door sync).
         // 7: added LootSpawn/LootTaken (loot sync).
-        public const int ProtocolVersion = 7;
+        // 8: added ConsumablesState/ConsumablesDelta (shared money/keys).
+        public const int ProtocolVersion = 8;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -147,6 +148,7 @@ namespace GungeonTogether.Networking.Session
             DungeonSeedReplicator.Instance.ResetSessionState();
             EnemyReplicator.Instance.ResetSessionState();
             LootReplicator.Instance.ResetSessionState();
+            ConsumablesReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -361,6 +363,14 @@ namespace GungeonTogether.Networking.Session
                     LootReplicator.Instance.HandleLootTaken(senderId, (LootTakenPacket)packet);
                     break;
 
+                case PacketType.ConsumablesState:
+                    if (IsClient) ConsumablesReplicator.Instance.HandleState((ConsumablesStatePacket)packet);
+                    break;
+
+                case PacketType.ConsumablesDelta:
+                    if (IsHost) ConsumablesReplicator.Instance.HandleDelta((ConsumablesDeltaPacket)packet);
+                    break;
+
                 case PacketType.EnemySpawn:
                     if (IsClient) EnemyReplicator.Instance.HandleSpawn((EnemySpawnPacket)packet);
                     break;
@@ -445,6 +455,7 @@ namespace GungeonTogether.Networking.Session
             DungeonSeedReplicator.Instance.SendCurrentSeedTo(transportId);
             WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
             EnemyReplicator.Instance.SendCurrentRoomStateTo(transportId);
+            ConsumablesReplicator.Instance.SendCurrentStateTo(transportId);
         }
 
         private void HandleConnectionAccepted(ulong senderId, ConnectionAcceptedPacket packet)
