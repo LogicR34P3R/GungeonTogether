@@ -39,7 +39,8 @@ namespace GungeonTogether.Networking.Session
         // 7: added LootSpawn/LootTaken (loot sync).
         // 8: added ConsumablesState/ConsumablesDelta (shared money/keys).
         // 9: added ChestSpawn/ChestInteract/ChestState (host-authoritative chests).
-        public const int ProtocolVersion = 9;
+        // 10: added ShopItemSold (shared shop stock).
+        public const int ProtocolVersion = 10;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -382,6 +383,11 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.ChestState:
                     if (IsClient) ChestReplicator.Instance.HandleState((ChestStatePacket)packet);
+                    break;
+
+                // Both directions: the host also relays a client's purchase to other clients.
+                case PacketType.ShopItemSold:
+                    ShopReplicator.Instance.HandleSold(senderId, (ShopItemSoldPacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

@@ -37,6 +37,7 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.ChestSpawn, typeof(ChestSpawnPacket) },
             { PacketType.ChestInteract, typeof(ChestInteractPacket) },
             { PacketType.ChestState, typeof(ChestStatePacket) },
+            { PacketType.ShopItemSold, typeof(ShopItemSoldPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)
