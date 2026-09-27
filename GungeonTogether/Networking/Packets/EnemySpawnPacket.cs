@@ -14,6 +14,7 @@ namespace GungeonTogether.Networking.Packets
         public Vector2 Position;
         public float Rotation;
         public int Health;
+        public bool IsBoss; // the client adopts its own native copy of the boss rather than spawning one
 
         public void Serialize(BinaryWriter writer)
         {
@@ -23,6 +24,7 @@ namespace GungeonTogether.Networking.Packets
             writer.Write(Position.y);
             writer.Write(Rotation);
             writer.Write(Health);
+            writer.Write(IsBoss);
         }
 
         public void Deserialize(BinaryReader reader)
@@ -32,6 +34,7 @@ namespace GungeonTogether.Networking.Packets
             Position = new Vector2(reader.ReadSingle(), reader.ReadSingle());
             Rotation = reader.ReadSingle();
             Health = reader.ReadInt32();
+            IsBoss = reader.ReadBoolean();
         }
     }
 }

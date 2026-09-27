@@ -40,6 +40,7 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.ShopItemSold, typeof(ShopItemSoldPacket) },
             { PacketType.EnemyProjectile, typeof(EnemyProjectilePacket) },
             { PacketType.EnemyDamage, typeof(EnemyDamagePacket) },
+            { PacketType.FloorCleared, typeof(FloorClearedPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

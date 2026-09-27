@@ -42,7 +42,8 @@ namespace GungeonTogether.Networking.Session
         // 10: added ShopItemSold (shared shop stock).
         // 11: added EnemyProjectile (enemy bullets on clients).
         // 12: added EnemyDamage (client hits on enemies).
-        public const int ProtocolVersion = 12;
+        // 13: EnemySpawn.IsBoss, EnemyState.MaxHealth, added FloorCleared (puppet bosses).
+        public const int ProtocolVersion = 13;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -400,6 +401,10 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.EnemyDamage:
                     if (IsHost) DamageReplicator.Instance.HandleEnemyDamage(senderId, (EnemyDamagePacket)packet);
+                    break;
+
+                case PacketType.FloorCleared:
+                    if (IsClient) EnemyReplicator.Instance.HandleFloorCleared();
                     break;
 
                 case PacketType.EnemySpawn:

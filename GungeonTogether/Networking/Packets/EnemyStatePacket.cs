@@ -13,6 +13,7 @@ namespace GungeonTogether.Networking.Packets
         public Vector2 Position;
         public float Rotation;
         public int Health;
+        public int MaxHealth; // applied to boss puppets, so the client's boss health bar tracks the host's boss
         public int AIState;
 
         public void Serialize(BinaryWriter writer)
@@ -22,6 +23,7 @@ namespace GungeonTogether.Networking.Packets
             writer.Write(Position.y);
             writer.Write(Rotation);
             writer.Write(Health);
+            writer.Write(MaxHealth);
             writer.Write(AIState);
         }
 
@@ -31,6 +33,7 @@ namespace GungeonTogether.Networking.Packets
             Position = new Vector2(reader.ReadSingle(), reader.ReadSingle());
             Rotation = reader.ReadSingle();
             Health = reader.ReadInt32();
+            MaxHealth = reader.ReadInt32();
             AIState = reader.ReadInt32();
         }
     }

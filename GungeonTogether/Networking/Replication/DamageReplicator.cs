@@ -52,7 +52,9 @@ namespace GungeonTogether.Networking.Replication
             NetworkPuppet puppet = healthHaver.GetComponent<NetworkPuppet>();
             if (puppet == null) return true;
 
-            if (damage > 0f) Instance.Accumulate(puppet.EnemyId, damage, direction, damageTypes, damageCategory);
+            // EnemyId 0: a native boss not yet adopted as the host's boss - nothing to forward to,
+            // and it must not take local damage either.
+            if (damage > 0f && puppet.EnemyId > 0) Instance.Accumulate(puppet.EnemyId, damage, direction, damageTypes, damageCategory);
             return false;
         }
 

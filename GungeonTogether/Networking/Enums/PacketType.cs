@@ -33,5 +33,6 @@ namespace GungeonTogether.Networking.Enums
         ShopItemSold = 28,
         EnemyProjectile = 29,
         EnemyDamage = 30,
+        FloorCleared = 31,
     }
 }

@@ -27,8 +27,11 @@ namespace GungeonTogether.Networking.Replication
     /// locally and drop loot. The host's RoomCleared recharges the client's active items; there is
     /// no local room-clear roll - the host's reward arrives via LootReplicator. Client doors mirror the host's via RoomSealState.
     ///
-    /// Boss rooms and bosses are left entirely alone on both sides for now: each player fights its
-    /// own boss.
+    /// Bosses (step 4c-1): the client keeps its own native bosses but neutralises them as id-less
+    /// puppets on level load, then adopts the matching one as the puppet of the host's boss - keeping
+    /// its intro, room hooks and health bar, which tracks the host's boss health. A boss's death
+    /// removes the puppet abruptly (no death sequence yet), and the host's Dungeon.FloorCleared is
+    /// replayed on the client.
     /// </summary>
     public class EnemyReplicator : MonoSingleton<EnemyReplicator>
     {
@@ -57,6 +60,9 @@ namespace GungeonTogether.Networking.Replication
         // Rooms we sealed because the host did - unsealed again if the session ends mid-fight.
         private readonly List<RoomHandler> _networkSealedRooms = new List<RoomHandler>();
 
+        // Client side: every puppet, including native bosses awaiting adoption - see EnforcePuppets.
+        private static readonly List<AIActor> _puppets = new List<AIActor>();
+
         private GameManager _subscribedTo;
 
         private void Update()
@@ -73,7 +79,29 @@ namespace GungeonTogether.Networking.Replication
             {
                 // Catches native enemies that appear after load (e.g. spawned by room events).
                 RoomHandler room = CurrentRoom();
-                if (room != null && !IsBossRoom(room)) RemoveNativeEnemies(room);
+                if (room != null) RemoveNativeEnemies(room);
+                EnforcePuppets();
+            }
+        }
+
+        /// <summary>
+        /// A puppet's AI must stay off, but game code can switch it back on - notably a boss's intro
+        /// sequence when it ends. Cheap: only a handful of puppets exist at a time.
+        /// </summary>
+        private static void EnforcePuppets()
+        {
+            for (int i = _puppets.Count - 1; i >= 0; i--)
+            {
+                AIActor puppet = _puppets[i];
+                if (puppet == null)
+                {
+                    _puppets.RemoveAt(i);
+                    continue;
+                }
+                if (puppet.behaviorSpeculator != null && puppet.behaviorSpeculator.enabled)
+                {
+                    puppet.behaviorSpeculator.InterruptAndDisable();
+                }
             }
         }
 
@@ -117,11 +145,6 @@ namespace GungeonTogether.Networking.Replication
             return player != null ? player.CurrentRoom : null;
         }
 
-        private static bool IsBossRoom(RoomHandler room)
-        {
-            return room.area != null && room.area.PrototypeRoomCategory == PrototypeDungeonRoom.RoomCategory.BOSS;
-        }
-
         private static RoomHandler FindRoomByName(string roomName)
         {
             GameManager gm = GameManager.Instance;
@@ -146,8 +169,6 @@ namespace GungeonTogether.Networking.Replication
                 _currentRoomName = roomName;
                 OnRoomChanged(roomName);
             }
-
-            if (IsBossRoom(room)) return; // bosses: each player fights its own for now
 
             if (Time.time >= _nextStateSyncTime)
             {
@@ -175,6 +196,14 @@ namespace GungeonTogether.Networking.Replication
             string roomName = room.GetRoomName();
             NetworkSession.Instance.Broadcast(new RoomClearedPacket { RoomName = roomName }, reliable: true);
             Debug.Log($"[EnemyReplicator] Host cleared room {roomName}.");
+        }
+
+        /// <summary>Dungeon.FloorCleared postfix (its floor boss died). The client never kills a boss itself.</summary>
+        public static void OnFloorCleared()
+        {
+            if (!NetworkSession.Instance.IsHost) return;
+            NetworkSession.Instance.Broadcast(new FloorClearedPacket(), reliable: true);
+            Debug.LogInfo("[EnemyReplicator] Host cleared the floor.");
         }
 
         private void OnHostRoomSealChanged(RoomHandler room, bool isSealed)
@@ -209,7 +238,8 @@ namespace GungeonTogether.Networking.Replication
                 EnemyGuid = guid,
                 Position = enemy.transform.position,
                 Rotation = enemy.transform.eulerAngles.z,
-                Health = enemy.healthHaver != null ? Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()) : 0
+                Health = enemy.healthHaver != null ? Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()) : 0,
+                IsBoss = enemy.healthHaver != null && enemy.healthHaver.IsBoss
             };
             NetworkSession.Instance.Broadcast(packet, reliable: true);
         }
@@ -225,7 +255,6 @@ namespace GungeonTogether.Networking.Replication
                 {
                     // A dying enemy can still be in the active list for a frame or two - treat it as gone.
                     if (enemy == null || enemy.healthHaver == null || enemy.healthHaver.IsDead) continue;
-                    if (enemy.healthHaver.IsBoss) continue; // e.g. a miniboss outside a boss room
 
                     int id = NetworkEntityManager.Instance.GetOrAssignId(enemy);
                     _currentIds.Add(id);
@@ -240,6 +269,7 @@ namespace GungeonTogether.Networking.Replication
                         Position = enemy.transform.position,
                         Rotation = enemy.transform.eulerAngles.z,
                         Health = Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()),
+                        MaxHealth = Mathf.RoundToInt(enemy.healthHaver.GetMaxHealth()),
                         AIState = (int)enemy.State
                     };
                     NetworkSession.Instance.Broadcast(packet, reliable: false);
@@ -267,16 +297,37 @@ namespace GungeonTogether.Networking.Replication
                 Debug.LogWarning("[EnemyReplicator] RoomHandler.remainingReinforcementLayers not found - client rooms may still spawn their own waves.");
             }
 
-            int removed = 0;
+            int removed = 0, bosses = 0;
             foreach (RoomHandler room in gm.Dungeon.data.rooms)
             {
-                if (IsBossRoom(room)) continue;
-
                 removed += RemoveNativeEnemies(room);
+                bosses += NeutraliseNativeBosses(room);
                 var layers = ReinforcementLayersField != null ? ReinforcementLayersField.GetValue(room) as System.Collections.IList : null;
                 if (layers != null) layers.Clear();
             }
-            Debug.LogInfo($"[EnemyReplicator] Removed {removed} native enemies and all reinforcement waves; this client fights the host's enemies only.");
+            Debug.LogInfo($"[EnemyReplicator] Removed {removed} native enemies and all reinforcement waves, neutralised {bosses} native boss(es); this client fights the host's enemies only.");
+        }
+
+        /// <summary>
+        /// Native bosses are kept rather than removed: each is later adopted as the puppet of the
+        /// host's boss (HandleSpawn), which keeps its intro sequence, room hooks and health bar
+        /// intact. Until then it's made a harmless puppet with no id, so the client never fights a
+        /// boss of its own - even if it walks in before the host does.
+        /// </summary>
+        private static int NeutraliseNativeBosses(RoomHandler room)
+        {
+            List<AIActor> active = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
+            if (active == null) return 0;
+
+            int count = 0;
+            foreach (AIActor actor in active)
+            {
+                if (actor == null || actor.healthHaver == null || !actor.healthHaver.IsBoss) continue;
+                if (actor.GetComponent<NetworkPuppet>() != null) continue;
+                MakePuppet(actor, enemyId: 0);
+                count++;
+            }
+            return count;
         }
 
         /// <summary>
@@ -352,7 +403,9 @@ namespace GungeonTogether.Networking.Replication
             // The host's room, by name - requires the shared seed to have produced the same layout.
             // Falls back to wherever we are if it can't be found.
             RoomHandler room = FindRoomByName(_hostRoomName) ?? CurrentRoom();
-            if (room == null || IsBossRoom(room)) return;
+            if (room == null) return;
+
+            if (packet.IsBoss && TryAdoptNativeBoss(room, packet)) return;
 
             AIActor spawned = AIActor.Spawn(prefab, packet.Position, room);
             if (spawned == null) return;
@@ -361,9 +414,32 @@ namespace GungeonTogether.Networking.Replication
             NetworkEntityManager.Instance.AddRemote(packet.EnemyId, spawned.gameObject);
         }
 
+        /// <summary>Links the host's boss to our own neutralised copy of it (same guid, same room).</summary>
+        private static bool TryAdoptNativeBoss(RoomHandler room, EnemySpawnPacket packet)
+        {
+            List<AIActor> active = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
+            if (active == null) return false;
+
+            foreach (AIActor actor in active)
+            {
+                if (actor == null || actor.EnemyGuid != packet.EnemyGuid) continue;
+                NetworkPuppet puppet = actor.GetComponent<NetworkPuppet>();
+                if (puppet == null || puppet.EnemyId != 0) continue; // not a native boss awaiting adoption
+
+                puppet.EnemyId = packet.EnemyId;
+                NetworkEntityManager.Instance.AddRemote(packet.EnemyId, actor.gameObject);
+                Debug.LogInfo($"[EnemyReplicator] Adopted native boss {actor.EnemyGuid} as the host's boss {packet.EnemyId}.");
+                return true;
+            }
+            Debug.LogWarning($"[EnemyReplicator] No native boss {packet.EnemyGuid} to adopt in {room.GetRoomName()} - spawning one instead.");
+            return false;
+        }
+
+        /// <param name="enemyId">The host enemy it stands for, or 0 for a native boss not yet adopted.</param>
         private static void MakePuppet(AIActor actor, int enemyId)
         {
             actor.gameObject.AddComponent<NetworkPuppet>().EnemyId = enemyId;
+            _puppets.Add(actor);
 
             // No local AI: the host decides movement and attacks.
             if (actor.behaviorSpeculator != null) actor.behaviorSpeculator.InterruptAndDisable();
@@ -383,11 +459,49 @@ namespace GungeonTogether.Networking.Replication
 
             remote.transform.position = packet.Position;
             remote.transform.rotation = Quaternion.Euler(0, 0, packet.Rotation);
+
+            // Boss health bars read the puppet's own HealthHaver, which never takes local damage -
+            // mirror the host's boss instead. ForceSetCurrentHealth can't kill (death comes from
+            // EnemyDeath), and 0 is skipped anyway.
+            HealthHaver health = remote.GetComponent<HealthHaver>();
+            if (health != null && health.IsBoss && packet.Health > 0 && packet.MaxHealth > 0)
+            {
+                if (Mathf.Abs(health.GetMaxHealth() - packet.MaxHealth) > 0.5f) health.SetHealthMaximum(packet.MaxHealth);
+                if (Mathf.Abs(health.GetCurrentHealth() - packet.Health) > 0.5f) health.ForceSetCurrentHealth(packet.Health);
+            }
         }
 
         public void HandleDeath(EnemyDeathPacket packet)
         {
+            GameObject remote = NetworkEntityManager.Instance.GetRemote(packet.EnemyId);
+            HealthHaver health = remote != null ? remote.GetComponent<HealthHaver>() : null;
+            if (health != null && health.IsBoss) HideBossHealthBars();
+
+            // AIActor.OnDestroy deliberately skips deregistering bosses, which would leave a destroyed
+            // boss puppet in its room's enemy list - so deregister explicitly, clear checks suppressed.
+            AIActor actor = remote != null ? remote.GetComponent<AIActor>() : null;
+            if (actor != null && actor.ParentRoom != null) actor.ParentRoom.DeregisterEnemy(actor, suppressClearChecks: true);
+
             NetworkEntityManager.Instance.RemoveRemote(packet.EnemyId);
+        }
+
+        public void HandleFloorCleared()
+        {
+            GameManager gm = GameManager.Instance;
+            if (gm == null || gm.Dungeon == null) return;
+            HideBossHealthBars();
+            gm.Dungeon.FloorCleared();
+            Debug.LogInfo("[EnemyReplicator] Floor cleared by the host.");
+        }
+
+        /// <summary>The puppet boss is removed abruptly (no death sequence yet), so its bar is hidden by hand.</summary>
+        private static void HideBossHealthBars()
+        {
+            GameUIRoot ui = GameUIRoot.HasInstance ? GameUIRoot.Instance : null;
+            if (ui == null) return;
+            if (ui.bossController != null) ui.bossController.DisableBossHealth();
+            if (ui.bossController2 != null) ui.bossController2.DisableBossHealth();
+            if (ui.bossControllerSide != null) ui.bossControllerSide.DisableBossHealth();
         }
 
         public void HandleRoomSealState(RoomSealStatePacket packet)
@@ -422,8 +536,6 @@ namespace GungeonTogether.Networking.Replication
                 Debug.Log($"[EnemyReplicator] Seal state for unknown room {roomName} (layout mismatch?) - ignored.");
                 return;
             }
-            if (IsBossRoom(room)) return; // the client runs its own boss room, doors included
-
             if (isSealed && !room.IsSealed)
             {
                 room.SealRoom();
@@ -439,7 +551,6 @@ namespace GungeonTogether.Networking.Replication
         public void HandleRoomCleared(RoomClearedPacket packet)
         {
             RoomHandler room = FindRoomByName(packet.RoomName);
-            if (room != null && IsBossRoom(room)) return; // the client fights its own boss
 
             // Same player effects as a local clear (active-item recharge etc.), but no local reward roll:
             // the host rolled the reward, and LootReplicator mirrors it here - a local roll would duplicate it.
@@ -483,6 +594,7 @@ namespace GungeonTogether.Networking.Replication
             _hostRoomName = "";
             _pendingSpawns.Clear();
             _pendingSealStates.Clear();
+            _puppets.Clear();
         }
     }
 }

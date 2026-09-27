@@ -235,7 +235,27 @@ namespace GungeonTogether.Networking.Replication
                     }
                 }
             }
-            return !string.IsNullOrEmpty(prefabName) && _prefabsByName.TryGetValue(prefabName, out Chest found) ? found : null;
+            if (string.IsNullOrEmpty(prefabName)) return null;
+            if (_prefabsByName.TryGetValue(prefabName, out Chest found)) return found;
+
+            // Boss reward chests come from the current dungeon's shared settings instead, which
+            // differ per floor - so look there on a miss rather than caching up front.
+            WeightedGameObjectCollection bossChests = GameManager.Instance != null && GameManager.Instance.Dungeon != null && GameManager.Instance.Dungeon.sharedSettingsPrefab != null
+                ? GameManager.Instance.Dungeon.sharedSettingsPrefab.ChestsForBosses
+                : null;
+            if (bossChests != null && bossChests.elements != null)
+            {
+                foreach (WeightedGameObject element in bossChests.elements)
+                {
+                    Chest chest = element != null && element.gameObject != null ? element.gameObject.GetComponent<Chest>() : null;
+                    if (chest != null && chest.name == prefabName)
+                    {
+                        _prefabsByName[prefabName] = chest;
+                        return chest;
+                    }
+                }
+            }
+            return null;
         }
     }
 }
