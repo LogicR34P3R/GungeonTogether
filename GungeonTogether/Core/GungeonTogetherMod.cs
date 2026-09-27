@@ -36,6 +36,19 @@ namespace GungeonTogether.Core
                 PlayerReplicator.Instance.gameObject.SetActive(true);
                 LoadingStateReplicator.Instance.gameObject.SetActive(true);
                 DungeonSeedReplicator.Instance.gameObject.SetActive(true);
+                LootReplicator.Instance.gameObject.SetActive(true);
+
+                // Runtime patches into game code (GungeonTogether.Patches) - only where the game
+                // offers no public hook, e.g. observing LootEngine spawns for loot sync. Isolated so
+                // a patch that no longer matches the game only costs that feature, not the whole mod.
+                try
+                {
+                    new HarmonyLib.Harmony("com.llamerrr.gungeontogether").PatchAll(typeof(GungeonTogetherMod).Assembly);
+                }
+                catch (System.Exception ex)
+                {
+                    Logger.LogError($"Harmony patching failed - loot sync will not work: {ex}");
+                }
 
                 Logger.LogInfo("Gungeon Together ready.");
             }

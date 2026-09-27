@@ -23,5 +23,7 @@ namespace GungeonTogether.Networking.Enums
         LevelTransition = 18,
         RoomCleared = 19,
         RoomSealState = 20,
+        LootSpawn = 21,
+        LootTaken = 22,
     }
 }

@@ -30,6 +30,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.LevelTransition, typeof(LevelTransitionPacket) },
             { PacketType.RoomCleared, typeof(RoomClearedPacket) },
             { PacketType.RoomSealState, typeof(RoomSealStatePacket) },
+            { PacketType.LootSpawn, typeof(LootSpawnPacket) },
+            { PacketType.LootTaken, typeof(LootTakenPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

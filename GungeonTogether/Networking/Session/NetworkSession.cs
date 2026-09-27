@@ -36,7 +36,8 @@ namespace GungeonTogether.Networking.Session
         // 4: levels identified by scene name in WorldState/LayoutHash; added LevelTransition.
         // 5: added RoomCleared; clients now run host enemies as puppets.
         // 6: added RoomSealState (door sync).
-        public const int ProtocolVersion = 6;
+        // 7: added LootSpawn/LootTaken (loot sync).
+        public const int ProtocolVersion = 7;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -145,6 +146,7 @@ namespace GungeonTogether.Networking.Session
             LoadingStateReplicator.Instance.ApplyLoadingState(false);
             DungeonSeedReplicator.Instance.ResetSessionState();
             EnemyReplicator.Instance.ResetSessionState();
+            LootReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -348,6 +350,15 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.RoomSealState:
                     if (IsClient) EnemyReplicator.Instance.HandleRoomSealState((RoomSealStatePacket)packet);
+                    break;
+
+                // Both directions: the host also relays a client's loot to other clients.
+                case PacketType.LootSpawn:
+                    LootReplicator.Instance.HandleLootSpawn(senderId, (LootSpawnPacket)packet);
+                    break;
+
+                case PacketType.LootTaken:
+                    LootReplicator.Instance.HandleLootTaken(senderId, (LootTakenPacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

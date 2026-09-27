@@ -25,7 +25,7 @@ namespace GungeonTogether.Networking.Replication
     /// spawned as puppets: AI off, ignored for room clear, immune to local damage - so destroying
     /// one never fires the client's own clear/wave/reward logic, and the client can't kill one
     /// locally and drop loot. The host's RoomCleared recharges the client's active items; there is
-    /// no client room-clear loot (a deliberate first-version choice). Client doors mirror the host's via RoomSealState.
+    /// no local room-clear roll - the host's reward arrives via LootReplicator. Client doors mirror the host's via RoomSealState.
     ///
     /// Boss rooms and bosses are left entirely alone on both sides for now: each player fights its
     /// own boss.
@@ -440,8 +440,8 @@ namespace GungeonTogether.Networking.Replication
             RoomHandler room = FindRoomByName(packet.RoomName);
             if (room != null && IsBossRoom(room)) return; // the client fights its own boss
 
-            // Same player effects as a local clear (active-item recharge etc.), but no room reward:
-            // loot isn't synced yet, so a local roll would hand out items the host never sees.
+            // Same player effects as a local clear (active-item recharge etc.), but no local reward roll:
+            // the host rolled the reward, and LootReplicator mirrors it here - a local roll would duplicate it.
             PlayerController player = GameManager.Instance != null ? GameManager.Instance.PrimaryPlayer : null;
             if (player != null) player.OnRoomCleared();
 
