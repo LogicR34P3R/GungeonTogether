@@ -206,8 +206,12 @@ namespace GungeonTogether.Networking.Players
             Transform sourceRoot = source.transform.root;
 
             GameObject spriteObject = new GameObject("Sprite");
-            // ETG's cameras only draw specific layers; a new object lands on Default, which they skip.
-            spriteObject.layer = source.gameObject.layer;
+            // The layer live player sprites end up on. tk2dBaseSprite.Awake moves any sprite with a
+            // gameActor to FG_Reflection at runtime, but a prefab never ran Awake and still carries
+            // FG_Critical, which ETG draws in another pass - the avatar looked washed out/ghostly.
+            // A new object would land on Default, which ETG's cameras skip entirely.
+            int playerLayer = LayerMask.NameToLayer("FG_Reflection");
+            spriteObject.layer = playerLayer >= 0 ? playerLayer : source.gameObject.layer;
             spriteObject.transform.parent = transform;
             spriteObject.transform.localPosition = sourceRoot.InverseTransformPoint(source.transform.position);
             spriteObject.transform.localRotation = Quaternion.identity;
