@@ -21,6 +21,9 @@ namespace GungeonTogether.Networking.Entities
             return id;
         }
 
+        /// <summary>Host side: the id of an entity that's already synced - never assigns a new one.</summary>
+        public bool TryGetId(object entity, out int id) => _entityIds.TryGetValue(entity, out id);
+
         public void AddRemote(int id, GameObject go) => _remoteEntities[id] = go;
         public GameObject GetRemote(int id) => _remoteEntities.TryGetValue(id, out var go) ? go : null;
         // go can already be Unity-destroyed here (e.g. the client killed its local copy first).

@@ -40,6 +40,7 @@ namespace GungeonTogether.Core
                 ConsumablesReplicator.Instance.gameObject.SetActive(true);
                 ChestReplicator.Instance.gameObject.SetActive(true);
                 ShopReplicator.Instance.gameObject.SetActive(true);
+                ProjectileReplicator.Instance.gameObject.SetActive(true);
 
                 ApplyHarmonyPatches();
 

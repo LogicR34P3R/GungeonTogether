@@ -31,5 +31,6 @@ namespace GungeonTogether.Networking.Enums
         ChestInteract = 26,
         ChestState = 27,
         ShopItemSold = 28,
+        EnemyProjectile = 29,
     }
 }
