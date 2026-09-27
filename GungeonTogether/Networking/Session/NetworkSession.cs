@@ -41,7 +41,8 @@ namespace GungeonTogether.Networking.Session
         // 9: added ChestSpawn/ChestInteract/ChestState (host-authoritative chests).
         // 10: added ShopItemSold (shared shop stock).
         // 11: added EnemyProjectile (enemy bullets on clients).
-        public const int ProtocolVersion = 11;
+        // 12: added EnemyDamage (client hits on enemies).
+        public const int ProtocolVersion = 12;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -153,6 +154,7 @@ namespace GungeonTogether.Networking.Session
             LootReplicator.Instance.ResetSessionState();
             ConsumablesReplicator.Instance.ResetSessionState();
             ProjectileReplicator.Instance.ResetSessionState();
+            DamageReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -394,6 +396,10 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.EnemyProjectile:
                     if (IsClient) ProjectileReplicator.Instance.HandleEnemyProjectile((EnemyProjectilePacket)packet);
+                    break;
+
+                case PacketType.EnemyDamage:
+                    if (IsHost) DamageReplicator.Instance.HandleEnemyDamage(senderId, (EnemyDamagePacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

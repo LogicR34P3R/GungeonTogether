@@ -41,6 +41,7 @@ namespace GungeonTogether.Core
                 ChestReplicator.Instance.gameObject.SetActive(true);
                 ShopReplicator.Instance.gameObject.SetActive(true);
                 ProjectileReplicator.Instance.gameObject.SetActive(true);
+                DamageReplicator.Instance.gameObject.SetActive(true);
 
                 ApplyHarmonyPatches();
 

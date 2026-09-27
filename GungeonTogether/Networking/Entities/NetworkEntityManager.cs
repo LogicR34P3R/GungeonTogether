@@ -10,6 +10,7 @@ namespace GungeonTogether.Networking.Entities
 
         private int _nextId = 1;
         private Dictionary<object, int> _entityIds = new Dictionary<object, int>(); // host side: enemy object -> id
+        private Dictionary<int, object> _entitiesById = new Dictionary<int, object>(); // host side: id -> enemy object (applying client damage)
         private Dictionary<int, GameObject> _remoteEntities = new Dictionary<int, GameObject>(); // client side: id -> remote object
 
         /// <summary>Host side: same id every call for a given entity, assigning one on first use.</summary>
@@ -18,11 +19,15 @@ namespace GungeonTogether.Networking.Entities
             if (_entityIds.TryGetValue(entity, out int id)) return id;
             id = _nextId++;
             _entityIds[entity] = id;
+            _entitiesById[id] = entity;
             return id;
         }
 
         /// <summary>Host side: the id of an entity that's already synced - never assigns a new one.</summary>
         public bool TryGetId(object entity, out int id) => _entityIds.TryGetValue(entity, out id);
+
+        /// <summary>Host side: the entity a client is referring to by id.</summary>
+        public bool TryGetEntity(int id, out object entity) => _entitiesById.TryGetValue(id, out entity);
 
         public void AddRemote(int id, GameObject go) => _remoteEntities[id] = go;
         public GameObject GetRemote(int id) => _remoteEntities.TryGetValue(id, out var go) ? go : null;
@@ -35,6 +40,7 @@ namespace GungeonTogether.Networking.Entities
             foreach (var kv in _remoteEntities) if (kv.Value != null) Object.Destroy(kv.Value);
             _remoteEntities.Clear();
             _entityIds.Clear();
+            _entitiesById.Clear();
             _nextId = 1;
         }
     }

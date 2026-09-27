@@ -357,13 +357,13 @@ namespace GungeonTogether.Networking.Replication
             AIActor spawned = AIActor.Spawn(prefab, packet.Position, room);
             if (spawned == null) return;
 
-            MakePuppet(spawned);
+            MakePuppet(spawned, packet.EnemyId);
             NetworkEntityManager.Instance.AddRemote(packet.EnemyId, spawned.gameObject);
         }
 
-        private static void MakePuppet(AIActor actor)
+        private static void MakePuppet(AIActor actor, int enemyId)
         {
-            actor.gameObject.AddComponent<NetworkPuppet>();
+            actor.gameObject.AddComponent<NetworkPuppet>().EnemyId = enemyId;
 
             // No local AI: the host decides movement and attacks.
             if (actor.behaviorSpeculator != null) actor.behaviorSpeculator.InterruptAndDisable();
@@ -372,6 +372,7 @@ namespace GungeonTogether.Networking.Replication
             actor.IgnoreForRoomClear = true;
 
             // The client can't kill it locally (and drop loot); only the host's EnemyDeath removes it.
+            // Hits still count: DamageReplicator forwards them to the host's real enemy.
             if (actor.healthHaver != null) actor.healthHaver.PreventAllDamage = true;
         }
 
