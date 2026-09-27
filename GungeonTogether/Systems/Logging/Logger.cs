@@ -40,7 +40,19 @@ namespace GungeonTogether.Systems.Logging
         public static void LogWarningThrottled(string key, object data, float intervalSeconds = 5f)
         {
             if (!IsEnabled(LogLevel.Warning)) return;
+            if (PassThrottle(key, intervalSeconds, out string suffix)) _logSource?.LogWarning($"{data}{suffix}");
+        }
 
+        /// <summary>Same as LogWarningThrottled, at Error level.</summary>
+        public static void LogErrorThrottled(string key, object data, float intervalSeconds = 5f)
+        {
+            if (!IsEnabled(LogLevel.Error)) return;
+            if (PassThrottle(key, intervalSeconds, out string suffix)) _logSource?.LogError($"{data}{suffix}");
+        }
+
+        private static bool PassThrottle(string key, float intervalSeconds, out string suffix)
+        {
+            suffix = "";
             float now = UnityEngine.Time.realtimeSinceStartup;
             if (!_throttles.TryGetValue(key, out var state))
             {
@@ -51,13 +63,13 @@ namespace GungeonTogether.Systems.Logging
             if (now < state.NextAllowedTime)
             {
                 state.Suppressed++;
-                return;
+                return false;
             }
 
-            string suffix = state.Suppressed > 0 ? $" ({state.Suppressed} more suppressed in the last {intervalSeconds:0}s)" : "";
-            _logSource?.LogWarning($"{data}{suffix}");
+            if (state.Suppressed > 0) suffix = $" ({state.Suppressed} more suppressed in the last {intervalSeconds:0}s)";
             state.Suppressed = 0;
             state.NextAllowedTime = now + intervalSeconds;
+            return true;
         }
     }
 }

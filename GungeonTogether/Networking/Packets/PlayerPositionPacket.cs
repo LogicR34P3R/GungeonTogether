@@ -15,9 +15,10 @@ namespace GungeonTogether.Networking.Packets
         public float Rotation;
         public bool IsGrounded;
         public bool IsDodgeRolling;
-        public int AnimationState;
-        public int SpriteId;
+        public int CharacterId; // (int)PlayableCharacters of the sender
+        public int SpriteId;    // sender's current tk2d sprite frame, in its character's collection
         public bool FlipX;
+        public float SendTime; // sender's Time.realtimeSinceStartup - lets the receiver interpolate on the sender's timeline
 
         public void Serialize(BinaryWriter writer)
         {
@@ -29,9 +30,10 @@ namespace GungeonTogether.Networking.Packets
             writer.Write(Rotation);
             writer.Write(IsGrounded);
             writer.Write(IsDodgeRolling);
-            writer.Write(AnimationState);
+            writer.Write(CharacterId);
             writer.Write(SpriteId);
             writer.Write(FlipX);
+            writer.Write(SendTime);
         }
 
         public void Deserialize(BinaryReader reader)
@@ -42,9 +44,10 @@ namespace GungeonTogether.Networking.Packets
             Rotation = reader.ReadSingle();
             IsGrounded = reader.ReadBoolean();
             IsDodgeRolling = reader.ReadBoolean();
-            AnimationState = reader.ReadInt32();
+            CharacterId = reader.ReadInt32();
             SpriteId = reader.ReadInt32();
             FlipX = reader.ReadBoolean();
+            SendTime = reader.ReadSingle();
         }
     }
 }

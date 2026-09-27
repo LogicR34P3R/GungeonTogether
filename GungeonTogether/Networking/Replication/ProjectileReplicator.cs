@@ -92,8 +92,61 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Host: report ----
 
+        // ---- Diagnostics ----
+        // Clients took damage from replayed enemy bullets they couldn't see, so: counts every 15s,
+        // plus the render state of one sample bullet a moment after it's fired (either side), to
+        // compare a bullet that shows with one that doesn't.
+
+        private const float StatsInterval = 15f;
+        private static int _statSent, _statReceived, _statFired, _statNoPuppet, _statFailed;
+        private static float _nextStatsTime;
+        private static Projectile _sample;
+        private static string _sampleLabel;
+        private static float _sampleTime, _nextSampleAllowed;
+
+        public static void SampleForDiagnostics(Projectile projectile, string label)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_sample != null || now < _nextSampleAllowed || projectile == null) return;
+            _sample = projectile;
+            _sampleLabel = label;
+            _sampleTime = now;
+            _nextSampleAllowed = now + StatsInterval;
+        }
+
+        private static void UpdateDiagnostics()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_sampleLabel != null && now - _sampleTime >= 0.25f)
+            {
+                if (_sample == null)
+                {
+                    Debug.LogInfo($"[ProjectileReplicator] Sample {_sampleLabel}: gone within 0.25s.");
+                }
+                else
+                {
+                    Renderer r = _sample.sprite != null ? _sample.sprite.renderer : _sample.GetComponentInChildren<Renderer>();
+                    Vector3 p = _sample.transform.position;
+                    string render = r == null ? "no renderer"
+                        : $"layer={LayerMask.LayerToName(r.gameObject.layer)}, enabled={r.enabled}, isVisible={r.isVisible}, spriteZ={r.transform.position.z:0.0}";
+                    Debug.LogInfo($"[ProjectileReplicator] Sample {_sampleLabel} '{_sample.name}': pos={p}, active={_sample.gameObject.activeInHierarchy}, {render}, " +
+                                  $"heightOffGround={(_sample.sprite != null ? _sample.sprite.HeightOffGround : 0f):0.00}");
+                }
+                _sample = null;
+                _sampleLabel = null;
+            }
+
+            if (now < _nextStatsTime) return;
+            _nextStatsTime = now + StatsInterval;
+            if (_statSent + _statReceived == 0) return;
+            Debug.LogInfo($"[ProjectileReplicator] Last {StatsInterval:0}s: sent={_statSent}, received={_statReceived}, fired={_statFired}, " +
+                          $"noPuppet={_statNoPuppet}, failed={_statFailed}");
+            _statSent = _statReceived = _statFired = _statNoPuppet = _statFailed = 0;
+        }
+
         private void LateUpdate()
         {
+            UpdateDiagnostics();
             if (_captured.Count == 0) return;
             if (!NetworkSession.Instance.IsHost)
             {
@@ -131,6 +184,8 @@ namespace GungeonTogether.Networking.Replication
                     Direction = direction,
                     Speed = speed
                 }, reliable: false);
+                _statSent++;
+                SampleForDiagnostics(c.Projectile, "host enemy bullet");
             }
             _captured.Clear();
         }
@@ -139,10 +194,14 @@ namespace GungeonTogether.Networking.Replication
 
         public void HandleEnemyProjectile(EnemyProjectilePacket packet)
         {
+            _statReceived++;
             GameObject remote = NetworkEntityManager.Instance.GetRemote(packet.EnemyId);
-            if (remote == null) return;
-            AIActor puppet = remote.GetComponent<AIActor>();
-            if (puppet == null) return;
+            AIActor puppet = remote != null ? remote.GetComponent<AIActor>() : null;
+            if (puppet == null)
+            {
+                _statNoPuppet++;
+                return;
+            }
 
             try
             {
@@ -160,9 +219,12 @@ namespace GungeonTogether.Networking.Replication
                 projectile.baseData.speed = packet.Speed;
                 projectile.UpdateSpeed();
                 projectile.SendInDirection(BraveMathCollege.DegreesToVector(packet.Direction), resetDistance: true);
+                _statFired++;
+                SampleForDiagnostics(projectile, "client enemy bullet");
             }
             catch (Exception e)
             {
+                _statFailed++;
                 Debug.LogWarningThrottled($"Projectile.SpawnFailed:{packet.Kind}:{packet.BankName}",
                     $"[ProjectileReplicator] Couldn't fire {packet.Kind} bullet '{packet.BankName}' from puppet {packet.EnemyId}: {e.Message}");
             }

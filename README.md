@@ -35,11 +35,11 @@ My paypal is llamerrr1@gmail.com if you actually want to (for some reason)
 |:---:|:---:|:---:|
 | Steam invites/lobby system | 🟩 Done | Lobby creation, joining and invites; only lobby members can connect |
 | Steam P2P networking | 🟨 Working | Rewritten: direct Steamworks calls, packet sequencing and chunking, heartbeat and clean disconnects |
-| Basic UI | 🟨 Working | Modern multiplayer menu (Ctrl+P) available |
-| Player Synchronization | 🟨 Working | Position and facing sync; both players' health/ammo/gun are sent but not shown yet |
+| Basic UI | 🟨 Working | Multiplayer menu (Ctrl+P) to host, invite and leave |
+| Player Synchronization | 🟨 Working | Players see each other as their own character, animated; smoother movement and showing each other's shots are built but still being tested; no gun or hands on the other player yet |
 | Dungeon Synchronization | 🟨 Working | Shared run seed so both players get the same floors; clients follow the host between floors, secret floors included; save and load system working |
-| Enemy Synchronization | 🟨 Working | The host runs the enemies and clients fight copies of them; enemies shoot at everyone, everyone's hits count, and room doors lock and unlock together |
-| Projectile Synchronization | 🟨 Working | Enemy bullets reach clients (straight-line); bosses replay their real attack patterns |
+| Enemy Synchronization | 🟨 Working | The host runs the enemies and clients fight copies of them; everyone's hits count; whoever enters a combat room first pulls the other player in, like vanilla co-op |
+| Projectile Synchronization | 🟨 In progress | Enemy bullets hit clients but are not visible to them yet; bosses replay their real attack patterns |
 | Boss Synchronization | 🟨 In progress | Shared boss fights with intro and health bar; no boss death animation yet; individual bosses still need testing |
 | Loot Synchronization | 🟨 Working | Drops, room rewards, chests and shops are shared; money and keys are one shared pool, like vanilla co-op |
 | Singleplayer | 🏁 Finished | Yippeeee!!!!! |

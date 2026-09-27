@@ -45,7 +45,7 @@ namespace GungeonTogether.Networking.Session
         // 13: EnemySpawn.IsBoss, EnemyState.MaxHealth, added FloorCleared (puppet bosses).
         // 14: added BossScriptStart/BossScriptStop (boss attack script replay).
         // 15: Heartbeat carries a timestamp and is echoed (ping measurement).
-        public const int ProtocolVersion = 15;
+        public const int ProtocolVersion = 19;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -55,6 +55,10 @@ namespace GungeonTogether.Networking.Session
         // Heartbeats double as pings (see HandleHeartbeat); the smoothed result is logged this often.
         private const float PingLogInterval = 15f;
         private float _nextPingLogTime;
+
+        // Until the game has initialised Steamworks, networking start is retried this often.
+        private const float SteamStartRetryInterval = 1f;
+        private float _nextSteamStartAttempt;
 
         private readonly ISteamTransport _transport = SteamP2PTransport.Instance;
         private readonly PacketChannel _packetChannel;
@@ -74,14 +78,15 @@ namespace GungeonTogether.Networking.Session
         {
             try
             {
-                _transport.Initialise();
                 _packetChannel.FrameReceived += MarkPeerSeen;
                 _packetChannel.PacketReceived += HandlePacket;
                 _transport.SessionFailed += HandlePeerTimeout;
 
-                SteamLobby.Instance.Initialise();
                 SteamLobby.Instance.LobbyHostReady += _ => StartHosting();
                 SteamLobby.Instance.LobbyJoinReady += ownerId => ConnectTo(ownerId);
+
+                // Steam usually isn't up yet when the plugin loads; Update() keeps retrying.
+                TryStartSteam();
 
                 Debug.Log("[Session] Initialised.");
             }
@@ -93,11 +98,33 @@ namespace GungeonTogether.Networking.Session
             }
         }
 
+        /// <summary>
+        /// Starts the transport and lobby once the game has initialised Steamworks. Returns whether
+        /// they are running.
+        /// </summary>
+        private bool TryStartSteam()
+        {
+            if (_transport.IsInitialised) return true;
+            if (!SteamIdentity.IsSteamReady()) return false;
+
+            _transport.Initialise();
+            SteamLobby.Instance.Initialise();
+            Debug.LogInfo("[Session] Steam is ready; networking started.");
+            return true;
+        }
+
         public void Update()
         {
-            _transport.Update();
-
             float now = Time.realtimeSinceStartup;
+
+            if (!_transport.IsInitialised)
+            {
+                if (now < _nextSteamStartAttempt) return;
+                _nextSteamStartAttempt = now + SteamStartRetryInterval;
+                if (!TryStartSteam()) return;
+            }
+
+            _transport.Update();
             _packetChannel.Update(now);
 
             // PeerConnection.Update() can remove itself from _peers (timeout), so snapshot first.
@@ -175,6 +202,7 @@ namespace GungeonTogether.Networking.Session
             ProjectileReplicator.Instance.ResetSessionState();
             DamageReplicator.Instance.ResetSessionState();
             ScriptReplicator.Instance.ResetSessionState();
+            PlayerShotReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -245,6 +273,9 @@ namespace GungeonTogether.Networking.Session
             }
         }
 
+        /// <summary>Client only: the host's peer id, or 0 when not a client.</summary>
+        public ulong HostPeerId => IsClient ? GetHostPeer()?.PeerId ?? 0UL : 0UL;
+
         private PeerConnection GetHostPeer()
         {
             foreach (var peer in _peers.Values) return peer; // client only ever has one entry
@@ -274,7 +305,10 @@ namespace GungeonTogether.Networking.Session
             }
             catch (Exception e)
             {
-                Debug.LogError($"[Session] Error handling packet from {senderId}: {e.Message}");
+                // Throttled per sender+type: a broken handler otherwise fails at packet rate. The stack
+                // trace matters - Unity's native exceptions often carry an empty Message.
+                Debug.LogErrorThrottled($"Session.HandleError:{senderId}:{packet.Type}",
+                    $"[Session] Error handling {packet.Type} from {senderId}: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
             }
         }
 
@@ -318,7 +352,7 @@ namespace GungeonTogether.Networking.Session
                     var posPacket = (PlayerPositionPacket)packet;
                     if (IsClient && posPacket.PlayerId != _transport.LocalId)
                     {
-                        PlayerReplicator.Instance.UpdateRemotePlayer(posPacket.PlayerId, posPacket.Position, posPacket.Rotation, posPacket.FlipX);
+                        PlayerReplicator.Instance.UpdateRemotePlayer(posPacket);
                     }
                     else if (IsHost)
                     {
@@ -379,6 +413,26 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.RoomSealState:
                     if (IsClient) EnemyReplicator.Instance.HandleRoomSealState((RoomSealStatePacket)packet);
+                    break;
+
+                case PacketType.ClientEnteredRoom:
+                    if (IsHost) EnemyReplicator.Instance.HandleClientEnteredRoom(senderId, (ClientEnteredRoomPacket)packet);
+                    break;
+
+                case PacketType.PlayerProjectile:
+                    var shot = (PlayerProjectilePacket)packet;
+                    if (IsHost)
+                    {
+                        // Stamp the real shooter, show it here, and pass it on to the other clients.
+                        if (!_peers.TryGetValue(senderId, out var shooter)) break;
+                        shot.PlayerId = shooter.PlayerId;
+                        PlayerShotReplicator.Instance.HandlePlayerProjectile(shot);
+                        Broadcast(shot, senderId, reliable: false);
+                    }
+                    else if (shot.PlayerId != _transport.LocalId)
+                    {
+                        PlayerShotReplicator.Instance.HandlePlayerProjectile(shot);
+                    }
                     break;
 
                 // Both directions: the host also relays a client's loot to other clients.
@@ -606,7 +660,7 @@ namespace GungeonTogether.Networking.Session
             // Stamp the sender's real id before applying or relaying, so a client can't move
             // someone else's avatar by writing their id into the packet.
             packet.PlayerId = peer.PlayerId;
-            PlayerReplicator.Instance.UpdateRemotePlayer(packet.PlayerId, packet.Position, packet.Rotation, packet.FlipX);
+            PlayerReplicator.Instance.UpdateRemotePlayer(packet);
             Broadcast(packet, senderId, reliable: false);
         }
 

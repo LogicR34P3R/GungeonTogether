@@ -20,7 +20,7 @@ namespace GungeonTogether.Networking.Replication
     /// </summary>
     public class PlayerReplicator : MonoSingleton<PlayerReplicator>
     {
-        private const float PositionSendInterval = 0.05f; // 20 Hz - slower rates add more staleness than the network ping itself
+        private const float PositionSendInterval = 1f / 30f; // 30 Hz; receivers interpolate on the sender's timestamps, so uneven frame timing doesn't show
         private const float StatsSendInterval = 0.5f;
 
         private readonly Dictionary<ulong, RemotePlayerAvatar> _remotePlayers = new Dictionary<ulong, RemotePlayerAvatar>();
@@ -28,11 +28,29 @@ namespace GungeonTogether.Networking.Replication
         private float _nextPositionSendTime;
         private float _nextStatsSendTime;
 
+        private const float StatusLogInterval = 15f;
+        private float _nextStatusLogTime;
+        // Frame timing for the status line - tells "our game stutters" apart from "the avatar stutters".
+        private int _framesSinceStatus;
+        private float _worstFrameSinceStatus;
+
         private void Update()
         {
             if (!NetworkSession.Instance.IsConnected) return;
 
+            // An avatar created while our level loads survives into the new level but is never drawn
+            // (seen when both players enter a floor together). So hold no avatars during a load -
+            // the first position packet afterwards builds a fresh one - and don't send our own
+            // mid-transition position either.
+            if (IsLocalLoading())
+            {
+                if (_remotePlayers.Count > 0) ClearAll();
+                return;
+            }
+
             float now = Time.realtimeSinceStartup;
+            _framesSinceStatus++;
+            _worstFrameSinceStatus = Mathf.Max(_worstFrameSinceStatus, Time.unscaledDeltaTime);
 
             if (now >= _nextPositionSendTime)
             {
@@ -46,6 +64,37 @@ namespace GungeonTogether.Networking.Replication
             {
                 _nextStatsSendTime = now + StatsSendInterval;
                 BroadcastLocalStats();
+            }
+
+            if (now >= _nextStatusLogTime)
+            {
+                _nextStatusLogTime = now + StatusLogInterval;
+                LogAvatarStatus();
+            }
+        }
+
+        /// <summary>
+        /// Periodic "where is everyone" line - remote avatars have been invisible after level loads,
+        /// and this tells a lost/unmoving avatar apart from one that's alive but off-screen.
+        /// </summary>
+        private void LogAvatarStatus()
+        {
+            PlayerController local = LocalPlayer();
+            string localPos = local != null ? local.transform.position.ToString() : "(none)";
+            Debug.LogInfo($"[PlayerReplicator] Frames: avg {_framesSinceStatus / StatusLogInterval:0} fps, worst frame {_worstFrameSinceStatus * 1000f:0} ms");
+            _framesSinceStatus = 0;
+            _worstFrameSinceStatus = 0f;
+            foreach (var kvp in _remotePlayers)
+            {
+                RemotePlayerAvatar avatar = kvp.Value;
+                string state = avatar == null
+                    ? "destroyed"
+                    : $"pos={avatar.transform.position}, sprite={(avatar.HasSprite ? "yes" : "NO")}, lastUpdate={Time.realtimeSinceStartup - avatar.LastUpdateTime:0.0}s ago";
+                Debug.LogInfo($"[PlayerReplicator] Avatar {kvp.Key}: {state} | local={localPos} scene={WorldStateReplicator.CurrentSceneName()}");
+            }
+            if (_remotePlayers.Count == 0)
+            {
+                Debug.LogInfo($"[PlayerReplicator] No remote avatars | local={localPos} scene={WorldStateReplicator.CurrentSceneName()}");
             }
         }
 
@@ -122,30 +171,61 @@ namespace GungeonTogether.Networking.Replication
                 Rotation = player.transform.eulerAngles.z,
                 IsGrounded = true,
                 IsDodgeRolling = player.IsDodgeRolling,
-                AnimationState = player.spriteAnimator != null ? player.spriteAnimator.CurrentFrame : 0,
-                SpriteId = -1,
-                FlipX = player.sprite != null && player.sprite.FlipX
+                CharacterId = (int)player.characterIdentity,
+                // The frame actually on screen, so the remote avatar mirrors every animation as-is.
+                SpriteId = player.sprite != null ? player.sprite.spriteId : -1,
+                FlipX = player.sprite != null && player.sprite.FlipX,
+                SendTime = Time.realtimeSinceStartup
             };
         }
 
         public void SpawnRemotePlayer(ulong steamId, Vector2 position, float rotation)
         {
-            if (_remotePlayers.ContainsKey(steamId)) return;
+            if (TryGetLiveAvatar(steamId, out _)) return;
 
             RemotePlayerAvatar player = RemotePlayerAvatar.Create(steamId, position, rotation);
             _remotePlayers[steamId] = player;
             Debug.LogInfo($"[PlayerReplicator] Spawned remote player {steamId} at {position}");
         }
 
-        public void UpdateRemotePlayer(ulong steamId, Vector2 position, float rotation, bool flipX = false)
+        private static bool IsLocalLoading() => GameManager.HasInstance && GameManager.Instance.IsLoadingLevel;
+
+        public void UpdateRemotePlayer(PlayerPositionPacket packet)
         {
-            if (!_remotePlayers.TryGetValue(steamId, out var player))
+            if (IsLocalLoading()) return; // see Update: no avatars while loading
+            ulong steamId = packet.PlayerId;
+            if (!TryGetLiveAvatar(steamId, out var player))
             {
-                SpawnRemotePlayer(steamId, position, rotation);
-                _remotePlayers.TryGetValue(steamId, out player);
+                SpawnRemotePlayer(steamId, packet.Position, packet.Rotation);
+                if (!TryGetLiveAvatar(steamId, out player)) return;
             }
 
-            player?.Apply(position, rotation, flipX);
+            player.Apply(packet.Position, packet.Rotation, packet.FlipX, packet.CharacterId, packet.SpriteId, packet.SendTime);
+        }
+
+        /// <summary>Latest known position of a remote player, if their avatar exists.</summary>
+        public bool TryGetRemotePosition(ulong steamId, out Vector2 position)
+        {
+            position = Vector2.zero;
+            if (!TryGetLiveAvatar(steamId, out var player)) return false;
+            position = player.NetworkPosition;
+            return true;
+        }
+
+        /// <summary>
+        /// Avatars are ordinary scene objects, so every level load destroys them while this
+        /// dictionary still holds the dead reference - and C#'s ?./ContainsKey can't tell. Drop such
+        /// entries so the next position packet respawns the avatar in the new level.
+        /// </summary>
+        private bool TryGetLiveAvatar(ulong steamId, out RemotePlayerAvatar player)
+        {
+            if (!_remotePlayers.TryGetValue(steamId, out player)) return false;
+            if (player != null) return true; // Unity's overloaded ==: false once destroyed
+
+            _remotePlayers.Remove(steamId);
+            player = null;
+            Debug.LogInfo($"[PlayerReplicator] Avatar for {steamId} was destroyed (level load); respawning on next update.");
+            return false;
         }
 
         /// <summary>Applies incoming stats to the remote player they describe - never to the local player.</summary>
@@ -153,7 +233,7 @@ namespace GungeonTogether.Networking.Replication
         {
             if (packet.PlayerId == SteamworksLocalId()) return;
 
-            if (!_remotePlayers.TryGetValue(packet.PlayerId, out var player))
+            if (!TryGetLiveAvatar(packet.PlayerId, out var player))
             {
                 Debug.LogWarningThrottled($"PlayerReplicator.UnknownState:{packet.PlayerId}", $"[PlayerReplicator] Got state for unknown player {packet.PlayerId} (not spawned yet).");
                 return;
@@ -166,7 +246,7 @@ namespace GungeonTogether.Networking.Replication
         {
             if (_remotePlayers.TryGetValue(steamId, out var player))
             {
-                Destroy(player.gameObject);
+                if (player != null) Destroy(player.gameObject);
                 _remotePlayers.Remove(steamId);
                 Debug.LogInfo($"[PlayerReplicator] Removed remote player {steamId}");
             }
@@ -175,7 +255,7 @@ namespace GungeonTogether.Networking.Replication
         public void ClearAll()
         {
             foreach (var kvp in _remotePlayers)
-                Destroy(kvp.Value.gameObject);
+                if (kvp.Value != null) Destroy(kvp.Value.gameObject);
             _remotePlayers.Clear();
         }
     }

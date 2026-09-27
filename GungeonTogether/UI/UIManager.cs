@@ -1,295 +1,156 @@
+using System.Collections.Generic;
 using UnityEngine;
 using GungeonTogether.Networking.Session;
 using GungeonTogether.Networking.Transport;
 using GungeonTogether.Systems.Logging;
 using Debug = GungeonTogether.Systems.Logging.Debug;
-using System.Collections.Generic;
 
 namespace GungeonTogether.UI
 {
+	/// <summary>
+	/// The multiplayer menu, toggled with Ctrl+P. Drawn with Unity's immediate-mode GUI (OnGUI)
+	/// rather than the game's df* controls: df controls added at runtime never received mouse
+	/// clicks, while IMGUI reads the mouse directly and needs no scene setup.
+	/// </summary>
 	public static class UIManager
 	{
-		private static GameObject _root;
-		private static dfPanel _panel;
-		private static dfLabel _statusLabel;
-		private static dfButton _hostButton;
-		private static dfButton _inviteButton;
-		private static dfButton _leaveButton;
-		
-		private static dfPanel _playerListPanel;
-		private static dfScrollPanel _playerScrollPanel;
-		private static List<dfLabel> _playerLabels = new List<dfLabel>();
-		private static bool _subscribed = false;
+		// The menu is laid out at this height and scaled to the screen, so it keeps its size at any resolution.
+		private const float ReferenceHeight = 720f;
+		private const float PanelWidth = 320f;
+		private const string InputOverrideKey = "GungeonTogether.Menu";
+
+		private static bool _visible;
+		private static PlayerController _blockedPlayer;
+		private static Rect _panelRect = new Rect(20f, 20f, PanelWidth, 0f);
+		private static readonly List<string> _memberNames = new List<string>();
+		private static bool _memberNamesDirty = true;
+
+		public static bool IsVisible => _visible;
 
 		public static void Initialise()
 		{
-			// Lazy: build only when in foyer and UI system exists.
+			SteamLobby.Instance.OnPlayerListChanged += () => _memberNamesDirty = true;
 		}
 
 		public static void Update()
 		{
+			bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+			if (ctrl && Input.GetKeyDown(KeyCode.P))
+			{
+				_visible = !_visible;
+				_memberNamesDirty = true;
+				Debug.Log($"[UI] Menu {(_visible ? "opened" : "closed")}.");
+			}
+
+			UpdatePlayerInputBlock();
+		}
+
+		/// <summary>Called from GungeonTogetherMod.OnGUI.</summary>
+		public static void OnGUI()
+		{
+			if (!_visible) return;
+
+			float scale = Mathf.Max(1f, Screen.height / ReferenceHeight);
+			Matrix4x4 previous = GUI.matrix;
+			GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
 			try
 			{
-				GameManager gameManager = Object.FindObjectOfType<GameManager>();
-				if (gameManager == null) return;
-				if (!gameManager.IsFoyer)
-				{
-					SetVisible(false);
-					return;
-				}
-
-				EnsureBuilt();
-				UpdateStatus();
-				SubscribeEvents();
+				_panelRect = GUILayout.Window(0x6754, _panelRect, DrawWindow, "Gungeon Together", GUILayout.Width(PanelWidth));
 			}
-			catch { }
-		}
-
-		private static void EnsureBuilt()
-		{
-			if (_panel != null) return;
-			GameUIRoot uiRoot = Object.FindObjectOfType<GameUIRoot>();
-			if (uiRoot == null) return;
-			if (uiRoot.Manager == null) return;
-
-			dfGUIManager gui = uiRoot.Manager;
-
-			// Find a button template for consistent styling.
-			dfButton template = null;
-			var mm = Object.FindObjectOfType<MainMenuFoyerController>();
-			if (mm != null && mm.NewGameButton != null)
+			finally
 			{
-				template = mm.NewGameButton;
-			}
-			if (template == null)
-			{
-				Debug.LogWarning("[UI] Could not find MainMenuFoyerController.NewGameButton as template.");
-			}
-
-			_root = new GameObject("GungeonTogether_UI");
-			_root.transform.parent = gui.transform;
-			_root.transform.localPosition = Vector3.zero;
-			_root.transform.localScale = Vector3.one;
-
-			_panel = _root.AddComponent<dfPanel>();
-			if (gui != null)
-			{
-				gui.AddControl(_panel);
-			}
-			_panel.Anchor = dfAnchorStyle.Top | dfAnchorStyle.Left;
-			_panel.RelativePosition = new Vector3(25f, 25f, 0f);
-			_panel.Width = 420f;
-			_panel.Height = 300f;
-			_panel.IsVisible = true;
-			_panel.Opacity = 1f;
-
-			Debug.LogTrace($"[UI] Panel created: Position={_panel.RelativePosition}, Size={_panel.Width}x{_panel.Height}");
-
-			if (template != null)
-			{
-				_panel.Atlas = template.Atlas;
-				Debug.LogTrace($"[UI] Panel atlas set from template");
-			}
-
-			_statusLabel = CreateLabel(gui, _panel, template);
-			_statusLabel.RelativePosition = new Vector3(10f, 10f, 0f);
-			_statusLabel.Width = _panel.Width - 20f;
-			_statusLabel.Height = 70f;
-			_statusLabel.VerticalAlignment = dfVerticalAlignment.Top;
-			_statusLabel.TextScale = 1.0f;
-			_statusLabel.ProcessMarkup = true;
-			_statusLabel.ColorizeSymbols = true;
-
-			Debug.LogTrace($"[UI] Status label created: Position={_statusLabel.RelativePosition}, Size={_statusLabel.Width}x{_statusLabel.Height}");
-
-			// Layout buttons vertically within the panel
-			float currentY = _statusLabel.RelativePosition.y + _statusLabel.Height + 10f;
-			float buttonWidth = (_panel.Width - 30f) / 2f;
-			float buttonHeight = 40f;
-			float buttonSpacing = 10f;
-
-			Debug.LogTrace($"[UI] Button layout: currentY={currentY}, buttonWidth={buttonWidth}, buttonHeight={buttonHeight}, spacing={buttonSpacing}");
-
-		_hostButton = CreateButtonFromTemplate(gui, _panel, template, "GT_HostButton", "HOST LOBBY", 10f, currentY, buttonWidth, buttonHeight);
-		_hostButton.Click += OnHostClicked;
-		Debug.LogTrace($"[UI] Host button created: Position={_hostButton.RelativePosition}, Size={_hostButton.Width}x{_hostButton.Height}, Visible={_hostButton.IsVisible}");
-
-		_inviteButton = CreateButtonFromTemplate(gui, _panel, template, "GT_InviteButton", "INVITE", 10f + buttonWidth + buttonSpacing, currentY, buttonWidth, buttonHeight);
-		_inviteButton.Click += OnInviteClicked;
-		Debug.LogTrace($"[UI] Invite button created: Position={_inviteButton.RelativePosition}, Size={_inviteButton.Width}x{_inviteButton.Height}, Visible={_inviteButton.IsVisible}");
-
-		currentY += buttonHeight + buttonSpacing;
-
-		_leaveButton = CreateButtonFromTemplate(gui, _panel, template, "GT_LeaveButton", "LEAVE", 10f, currentY, buttonWidth, buttonHeight);
-		_leaveButton.Click += OnLeaveClicked;
-
-			// Player list panel (inside the main panel)
-			_playerListPanel = new dfPanel();
-			_panel.AddControl(_playerListPanel);
-			_playerListPanel.RelativePosition = new Vector3(10f, 130f, 0f);
-			_playerListPanel.Width = _panel.Width - 20f;
-			_playerListPanel.Height = 120f;
-			_playerListPanel.Atlas = template?.Atlas;
-			_playerListPanel.BackgroundSprite = "blank";
-			_playerListPanel.Color = new Color32(0, 0, 0, 150);
-
-			// Scrollable area
-			_playerScrollPanel = new dfScrollPanel();
-			_playerListPanel.AddControl(_playerScrollPanel);
-			_playerScrollPanel.RelativePosition = Vector3.zero;
-			_playerScrollPanel.Width = _playerListPanel.Width;
-			_playerScrollPanel.Height = _playerListPanel.Height;
-		}
-
-		private static void SubscribeEvents()
-		{
-			if (_subscribed) return;
-			SteamLobby.Instance.OnPlayerListChanged += RefreshPlayerList;
-			_subscribed = true;
-		}
-
-		private static void RefreshPlayerList()
-		{
-			if (_playerScrollPanel == null) return;
-
-			// Clear old labels
-			foreach (var label in _playerLabels)
-				UnityEngine.Object.Destroy(label.gameObject);
-			_playerLabels.Clear();
-
-			var members = SteamLobby.Instance.GetLobbyMembers();
-			float yOffset = 0f;
-			float labelHeight = 20f;
-			foreach (var id in members)
-			{
-				string name = SteamIdentity.GetPlayerName(id);
-				var label = CreateLabel(null, _playerScrollPanel, null);
-				label.Text = name;
-				label.RelativePosition = new Vector3(5f, yOffset, 0f);
-				label.Width = _playerScrollPanel.Width - 10f;
-				label.Height = labelHeight;
-				label.TextScale = 0.8f;
-				label.Color = Color.white;
-				label.VerticalAlignment = dfVerticalAlignment.Middle;
-				_playerLabels.Add(label);
-				yOffset += labelHeight + 2f;
+				GUI.matrix = previous;
 			}
 		}
 
-
-
-		private static void UpdateStatus()
+		private static void DrawWindow(int id)
 		{
-			if (_statusLabel == null) return;
-
+			var session = NetworkSession.Instance;
 			var lobby = SteamLobby.Instance;
-			string lobbyText = lobby.IsInLobby ? ("Lobby: " + lobby.CurrentLobbyId) : "Lobby: (none)";
-			string roleText = NetworkSession.Instance.IsHost ? "Role: Host" : (NetworkSession.Instance.IsClient ? "Role: Client" : "Role: (none)");
-			string connText = NetworkSession.Instance.IsConnected ? "Net: Connected" : "Net: Disconnected";
-			string pingText = NetworkSession.Instance.GetPingText();
-			if (pingText.Length > 0) pingText = " | " + pingText;
 
-			_statusLabel.ModifyLocalizedText("GUNGEON TOGETHER\n" + lobbyText + "\n" + roleText + " | " + connText + pingText);
+			if (!lobby.IsInitialised)
+			{
+				GUILayout.Label("Waiting for Steam...");
+			}
+			else
+			{
+				string role = session.IsHost ? "Host" : (session.IsClient ? "Client" : "(none)");
+				GUILayout.Label(lobby.IsInLobby ? $"Lobby: {lobby.CurrentLobbyId}" : "Lobby: (none)");
+				GUILayout.Label($"Role: {role} | Net: {(session.IsConnected ? "Connected" : "Disconnected")}");
+				string ping = session.GetPingText();
+				if (ping.Length > 0) GUILayout.Label(ping);
+			}
 
-			// Button enable states
-			if (_hostButton != null) _hostButton.IsEnabled = !NetworkSession.Instance.IsConnected;
-			if (_inviteButton != null) _inviteButton.IsEnabled = lobby.IsInLobby;
-			if (_leaveButton != null) _leaveButton.IsEnabled = lobby.IsInLobby || NetworkSession.Instance.IsConnected;
+			GUILayout.Space(6f);
+			GUILayout.BeginHorizontal();
+			GUI.enabled = lobby.IsInitialised && !lobby.IsInLobby && !session.IsConnected;
+			if (GUILayout.Button("Host Lobby")) OnHostClicked();
+			GUI.enabled = lobby.IsInLobby;
+			if (GUILayout.Button("Invite")) OnInviteClicked();
+			GUI.enabled = lobby.IsInLobby || session.IsConnected;
+			if (GUILayout.Button("Leave")) OnLeaveClicked();
+			GUI.enabled = true;
+			GUILayout.EndHorizontal();
+
+			if (lobby.IsInLobby)
+			{
+				GUILayout.Space(6f);
+				GUILayout.Label("Players:");
+				RefreshMemberNames();
+				foreach (string name in _memberNames)
+				{
+					GUILayout.Label("  " + name);
+				}
+			}
+
+			GUILayout.Space(4f);
+			GUILayout.Label("Ctrl+P to close");
+			GUI.DragWindow();
 		}
 
-		private static void SetVisible(bool visible)
+		private static void RefreshMemberNames()
 		{
-			if (_panel != null) _panel.IsVisible = visible;
+			if (!_memberNamesDirty) return;
+			_memberNamesDirty = false;
+			_memberNames.Clear();
+			foreach (ulong id in SteamLobby.Instance.GetLobbyMembers())
+			{
+				_memberNames.Add(SteamIdentity.GetPlayerName(id));
+			}
 		}
 
-		private static void OnHostClicked(dfControl control, dfMouseEventArgs mouseEvent)
+		/// <summary>
+		/// Stops the local player from shooting/moving while the menu is open, so clicking a button
+		/// doesn't also fire. Follows the PlayerController across level loads.
+		/// </summary>
+		private static void UpdatePlayerInputBlock()
+		{
+			PlayerController player = GameManager.HasInstance ? GameManager.Instance.PrimaryPlayer : null;
+			PlayerController wanted = _visible ? player : null;
+			if (wanted == _blockedPlayer) return;
+
+			if (_blockedPlayer != null) _blockedPlayer.ClearInputOverride(InputOverrideKey);
+			if (wanted != null) wanted.SetInputOverride(InputOverrideKey);
+			_blockedPlayer = wanted;
+		}
+
+		private static void OnHostClicked()
 		{
 			Debug.Log("[UI] Host Lobby clicked.");
 			SteamLobby.Instance.CreateLobby(4);
 		}
 
-		private static void OnInviteClicked(dfControl control, dfMouseEventArgs mouseEvent)
+		private static void OnInviteClicked()
 		{
 			Debug.Log("[UI] Invite clicked.");
 			SteamLobby.Instance.OpenInviteDialog();
 		}
 
-		private static void OnLeaveClicked(dfControl control, dfMouseEventArgs mouseEvent)
+		private static void OnLeaveClicked()
 		{
 			Debug.Log("[UI] Leave clicked.");
 			SteamLobby.Instance.LeaveLobby();
 			NetworkSession.Instance.Shutdown();
 		}
-
-		private static dfLabel CreateLabel(dfGUIManager gui, dfControl parent, dfButton template)
-		{
-			GameObject go = new GameObject("GT_StatusLabel");
-			go.transform.parent = parent != null ? parent.transform : null;
-			go.transform.localScale = Vector3.one;
-			var lbl = go.AddComponent<dfLabel>();
-			if (parent != null)
-			{
-				parent.AddControl(lbl);
-			}
-			if (template != null)
-			{
-				lbl.Atlas = template.Atlas;
-				lbl.Font = template.Font;
-				lbl.TextScale = template.TextScale;
-				lbl.Color = template.TextColor;
-			}
-			else
-			{
-				lbl.Color = Color.white;
-			}
-			lbl.WordWrap = true;
-			lbl.IsVisible = true;
-			return lbl;
-		}
-
-		private static dfButton CreateButtonFromTemplate(dfGUIManager gui, dfControl parent, dfButton template, string name, string text, float posX, float posY, float width, float height)
-		{
-			// Create button from scratch instead of cloning to avoid parent hierarchy issues
-			GameObject go = new GameObject(name);
-			go.transform.parent = parent != null ? parent.transform : null;
-			go.transform.localScale = Vector3.one;
-			go.transform.localPosition = Vector3.zero;
-
-			dfButton btn = go.AddComponent<dfButton>();
-			if (parent != null)
-			{
-				parent.AddControl(btn);
-			}
-			
-			// Apply styling from template if available
-			if (template != null)
-			{
-				btn.Atlas = template.Atlas;
-				btn.Font = template.Font;
-				btn.TextScale = template.TextScale;
-				btn.TextColor = template.TextColor;
-				btn.BackgroundSprite = template.BackgroundSprite;
-				btn.FocusSprite = template.FocusSprite;
-				btn.HoverSprite = template.HoverSprite;
-				btn.PressedSprite = template.PressedSprite;
-				btn.DisabledSprite = template.DisabledSprite;
-			}
-			
-			btn.Text = text;
-			btn.forceUpperCase = true;
-			btn.IsInteractive = true;
-			btn.IsVisible = true;
-			btn.IsEnabled = true;
-			
-			// Set position and size
-			btn.RelativePosition = new Vector3(posX, posY, 0f);
-			btn.Width = width;
-			btn.Height = height;
-			
-			Debug.LogTrace($"[UI] Button '{name}' created from scratch: Position={btn.RelativePosition}, Size={btn.Width}x{btn.Height}");
-			
-			return btn;
-		}
 	}
 }
-

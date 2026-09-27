@@ -36,5 +36,7 @@ namespace GungeonTogether.Networking.Enums
         FloorCleared = 31,
         BossScriptStart = 32,
         BossScriptStop = 33,
+        ClientEnteredRoom = 34,
+        PlayerProjectile = 35,
     }
 }

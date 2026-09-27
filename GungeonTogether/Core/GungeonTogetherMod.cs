@@ -43,6 +43,7 @@ namespace GungeonTogether.Core
                 ProjectileReplicator.Instance.gameObject.SetActive(true);
                 DamageReplicator.Instance.gameObject.SetActive(true);
                 ScriptReplicator.Instance.gameObject.SetActive(true);
+                PlayerShotReplicator.Instance.gameObject.SetActive(true);
                 BindSyncOptions();
 
                 ApplyHarmonyPatches();
@@ -114,6 +115,18 @@ namespace GungeonTogether.Core
             catch (System.Exception ex)
             {
                 Logger.LogError($"Error in Update: {ex.Message}");
+            }
+        }
+
+        private void OnGUI()
+        {
+            try
+            {
+                UIManager.OnGUI();
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError($"Error in OnGUI: {ex.Message}");
             }
         }
     }

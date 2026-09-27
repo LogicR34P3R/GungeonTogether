@@ -8,5 +8,6 @@ namespace GungeonTogether.Systems.Logging
         public static void LogWarning(object message) => Logger.LogWarning(message);
         public static void LogWarningThrottled(string key, object message, float intervalSeconds = 5f) => Logger.LogWarningThrottled(key, message, intervalSeconds);
         public static void LogError(object message) => Logger.LogError(message);
+        public static void LogErrorThrottled(string key, object message, float intervalSeconds = 5f) => Logger.LogErrorThrottled(key, message, intervalSeconds);
     }
 }

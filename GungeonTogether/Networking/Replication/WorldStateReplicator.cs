@@ -221,6 +221,25 @@ namespace GungeonTogether.Networking.Replication
 
             Debug.LogInfo($"[WorldStateReplicator] Following host to {sceneName}.");
             gm.DelayedLoadCustomLevel(FollowFadeSeconds, sceneName);
+
+            // Leaving the Breach through its door/elevator calls OnDepartedFoyer, which is the only
+            // thing that clears GameManager.IsFoyer and hands players their guns back. Loading a
+            // level directly skips it, so a following client would arrive gunless and still "in the
+            // foyer" - CurrentSceneName() then reads "" and the next WorldState re-loads the level.
+            // Called right after starting the load, as FoyerGungeonDoor does.
+            if (gm.IsFoyer && Foyer.Instance != null)
+            {
+                try
+                {
+                    Foyer.Instance.OnDepartedFoyer();
+                }
+                catch (System.Exception ex)
+                {
+                    // It assumes every player holds a gun; don't let that abort the follow.
+                    gm.IsFoyer = false;
+                    Debug.LogWarning($"[WorldStateReplicator] OnDepartedFoyer failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
         }
 
         // ---- Client: world state ----

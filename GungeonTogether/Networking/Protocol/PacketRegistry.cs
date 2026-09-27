@@ -43,6 +43,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.FloorCleared, typeof(FloorClearedPacket) },
             { PacketType.BossScriptStart, typeof(BossScriptStartPacket) },
             { PacketType.BossScriptStop, typeof(BossScriptStopPacket) },
+            { PacketType.ClientEnteredRoom, typeof(ClientEnteredRoomPacket) },
+            { PacketType.PlayerProjectile, typeof(PlayerProjectilePacket) },
         };
 
         public static INetworkPacket Create(PacketType type)
