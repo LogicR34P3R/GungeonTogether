@@ -44,12 +44,17 @@ namespace GungeonTogether.Networking.Session
         // 12: added EnemyDamage (client hits on enemies).
         // 13: EnemySpawn.IsBoss, EnemyState.MaxHealth, added FloorCleared (puppet bosses).
         // 14: added BossScriptStart/BossScriptStop (boss attack script replay).
-        public const int ProtocolVersion = 14;
+        // 15: Heartbeat carries a timestamp and is echoed (ping measurement).
+        public const int ProtocolVersion = 15;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
         private const float HeartbeatInterval = 1f;
         private float _nextHeartbeatTime;
+
+        // Heartbeats double as pings (see HandleHeartbeat); the smoothed result is logged this often.
+        private const float PingLogInterval = 15f;
+        private float _nextPingLogTime;
 
         private readonly ISteamTransport _transport = SteamP2PTransport.Instance;
         private readonly PacketChannel _packetChannel;
@@ -108,7 +113,19 @@ namespace GungeonTogether.Networking.Session
                 {
                     if (peer.State == ConnectionState.Connected)
                     {
-                        SendPacket(peer.PeerId, new HeartbeatPacket(), reliable: false);
+                        SendPacket(peer.PeerId, new HeartbeatPacket { Timestamp = now }, reliable: false);
+                    }
+                }
+            }
+
+            if (Role != NetworkRole.None && now >= _nextPingLogTime)
+            {
+                _nextPingLogTime = now + PingLogInterval;
+                foreach (var peer in _peers.Values)
+                {
+                    if (peer.State == ConnectionState.Connected && peer.PingMs >= 0f)
+                    {
+                        Debug.LogInfo($"[Session] Ping to {peer.PeerId}: {peer.PingMs:0} ms");
                     }
                 }
             }
@@ -314,7 +331,8 @@ namespace GungeonTogether.Networking.Session
                     break;
 
                 case PacketType.Heartbeat:
-                    // Nothing to do - MarkPeerSeen already ran for this frame.
+                    // Liveness is already handled (MarkPeerSeen ran for this frame); this is the ping.
+                    HandleHeartbeat(senderId, (HeartbeatPacket)packet);
                     break;
 
                 case PacketType.RunSeed:
@@ -524,6 +542,36 @@ namespace GungeonTogether.Networking.Session
 
             _peers.Remove(senderId);
             EndClientSession($"rejected by host {senderId} (host protocol={packet.ProtocolVersion}, local={ProtocolVersion})");
+        }
+
+        private void HandleHeartbeat(ulong senderId, HeartbeatPacket packet)
+        {
+            if (!packet.IsEcho)
+            {
+                // Echo it straight back; the sender times the round trip on its own clock.
+                SendPacket(senderId, new HeartbeatPacket { Timestamp = packet.Timestamp, IsEcho = true }, reliable: false);
+                return;
+            }
+
+            if (_peers.TryGetValue(senderId, out var peer))
+            {
+                peer.RecordPing(Time.realtimeSinceStartup - packet.Timestamp);
+            }
+        }
+
+        /// <summary>
+        /// Round-trip time in ms for the UI: to the host when a client; to the slowest client when
+        /// hosting (the one having the worst time). -1 when not connected or not measured yet.
+        /// Includes up to a frame of processing on each side, since packets are handled in Update.
+        /// </summary>
+        public float GetPingMs()
+        {
+            float worst = -1f;
+            foreach (var peer in _peers.Values)
+            {
+                if (peer.State == ConnectionState.Connected && peer.PingMs > worst) worst = peer.PingMs;
+            }
+            return worst;
         }
 
         private void HandlePlayerPosition(ulong senderId, PlayerPositionPacket packet)

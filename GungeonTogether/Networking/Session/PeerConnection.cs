@@ -28,6 +28,19 @@ namespace GungeonTogether.Networking.Session
             State = ConnectionState.Connecting;
         }
 
+        // Weight of each new sample in the smoothed round-trip time - smooths out a single slow packet.
+        private const float PingSmoothing = 0.2f;
+
+        /// <summary>Smoothed round-trip time to this peer in milliseconds, or -1 before the first measurement.</summary>
+        public float PingMs { get; private set; } = -1f;
+
+        public void RecordPing(float roundTripSeconds)
+        {
+            float sampleMs = roundTripSeconds * 1000f;
+            if (sampleMs < 0f || sampleMs > 60000f) return; // nonsense (e.g. an echo from before a restart)
+            PingMs = PingMs < 0f ? sampleMs : PingMs + (sampleMs - PingMs) * PingSmoothing;
+        }
+
         public void MarkSeen(float now) => _lastSeen = now;
 
         public void MarkConnected(float now)

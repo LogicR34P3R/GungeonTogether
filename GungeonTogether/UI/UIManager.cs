@@ -186,8 +186,10 @@ namespace GungeonTogether.UI
 			string lobbyText = lobby.IsInLobby ? ("Lobby: " + lobby.CurrentLobbyId) : "Lobby: (none)";
 			string roleText = NetworkSession.Instance.IsHost ? "Role: Host" : (NetworkSession.Instance.IsClient ? "Role: Client" : "Role: (none)");
 			string connText = NetworkSession.Instance.IsConnected ? "Net: Connected" : "Net: Disconnected";
+			float pingMs = NetworkSession.Instance.GetPingMs();
+			string pingText = pingMs >= 0f ? " | Ping: " + Mathf.RoundToInt(pingMs) + " ms" : "";
 
-			_statusLabel.ModifyLocalizedText("GUNGEON TOGETHER\n" + lobbyText + "\n" + roleText + " | " + connText);
+			_statusLabel.ModifyLocalizedText("GUNGEON TOGETHER\n" + lobbyText + "\n" + roleText + " | " + connText + pingText);
 
 			// Button enable states
 			if (_hostButton != null) _hostButton.IsEnabled = !NetworkSession.Instance.IsConnected;
