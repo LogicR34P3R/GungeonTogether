@@ -41,6 +41,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.EnemyProjectile, typeof(EnemyProjectilePacket) },
             { PacketType.EnemyDamage, typeof(EnemyDamagePacket) },
             { PacketType.FloorCleared, typeof(FloorClearedPacket) },
+            { PacketType.BossScriptStart, typeof(BossScriptStartPacket) },
+            { PacketType.BossScriptStop, typeof(BossScriptStopPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

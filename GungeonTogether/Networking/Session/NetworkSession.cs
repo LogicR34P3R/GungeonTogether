@@ -43,7 +43,8 @@ namespace GungeonTogether.Networking.Session
         // 11: added EnemyProjectile (enemy bullets on clients).
         // 12: added EnemyDamage (client hits on enemies).
         // 13: EnemySpawn.IsBoss, EnemyState.MaxHealth, added FloorCleared (puppet bosses).
-        public const int ProtocolVersion = 13;
+        // 14: added BossScriptStart/BossScriptStop (boss attack script replay).
+        public const int ProtocolVersion = 14;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -156,6 +157,7 @@ namespace GungeonTogether.Networking.Session
             ConsumablesReplicator.Instance.ResetSessionState();
             ProjectileReplicator.Instance.ResetSessionState();
             DamageReplicator.Instance.ResetSessionState();
+            ScriptReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -405,6 +407,14 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.FloorCleared:
                     if (IsClient) EnemyReplicator.Instance.HandleFloorCleared();
+                    break;
+
+                case PacketType.BossScriptStart:
+                    if (IsClient) ScriptReplicator.Instance.HandleStart((BossScriptStartPacket)packet);
+                    break;
+
+                case PacketType.BossScriptStop:
+                    if (IsClient) ScriptReplicator.Instance.HandleStop((BossScriptStopPacket)packet);
                     break;
 
                 case PacketType.EnemySpawn:

@@ -53,6 +53,7 @@ namespace GungeonTogether.Networking.Replication
         public static void CaptureScriptBullet(AIBulletBank bank, Bullet bullet)
         {
             if (!Capturing || bank == null || bullet == null || bullet.Projectile == null) return;
+            if (ScriptReplicator.IsReplayed(bullet)) return; // the client runs this script itself (4c-2)
             Add(bullet.Projectile, bank.aiActor, EnemyProjectileKind.Bank, bullet.BankName, bullet);
         }
 
