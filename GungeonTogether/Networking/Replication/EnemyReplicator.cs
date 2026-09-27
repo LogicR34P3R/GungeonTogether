@@ -35,7 +35,7 @@ namespace GungeonTogether.Networking.Replication
     /// </summary>
     public class EnemyReplicator : MonoSingleton<EnemyReplicator>
     {
-        private const float StateSyncInterval = 0.2f;
+        private const float StateSyncInterval = 0.1f; // 10 Hz; clients smooth and extrapolate between updates (NetworkPuppet)
 
         // RoomHandler keeps its pending reinforcement waves private; there's no public way to cancel them.
         private static readonly FieldInfo ReinforcementLayersField =
@@ -457,7 +457,13 @@ namespace GungeonTogether.Networking.Replication
             GameObject remote = NetworkEntityManager.Instance.GetRemote(packet.EnemyId);
             if (remote == null) return;
 
-            remote.transform.position = packet.Position;
+            // Smoothed and extrapolated by the puppet itself (which also keeps its hitbox in step).
+            NetworkPuppet puppet = remote.GetComponent<NetworkPuppet>();
+            if (puppet != null)
+            {
+                float pingMs = NetworkSession.Instance.GetPingMs();
+                puppet.ApplyState(packet.Position, pingMs > 0f ? pingMs / 2000f : 0f);
+            }
             remote.transform.rotation = Quaternion.Euler(0, 0, packet.Rotation);
 
             // Boss health bars read the puppet's own HealthHaver, which never takes local damage -

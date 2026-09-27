@@ -20,6 +20,12 @@ namespace GungeonTogether.Networking.Transport
         void Update();
         bool TrySend(ulong targetId, byte[] data, SendReliability reliability);
 
+        /// <summary>
+        /// Whether traffic to this peer goes through Steam's relay servers rather than a direct
+        /// connection - relaying typically adds tens to hundreds of ms of ping. False if unknown.
+        /// </summary>
+        bool TryGetRelayState(ulong peerId, out bool relayed);
+
         /// <summary>Raised when a full packet has been received from a peer.</summary>
         event Action<ulong, byte[]> PacketReceived;
 

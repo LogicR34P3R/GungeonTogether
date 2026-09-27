@@ -125,7 +125,7 @@ namespace GungeonTogether.Networking.Session
                 {
                     if (peer.State == ConnectionState.Connected && peer.PingMs >= 0f)
                     {
-                        Debug.LogInfo($"[Session] Ping to {peer.PeerId}: {peer.PingMs:0} ms");
+                        Debug.LogInfo($"[Session] Ping to {peer.PeerId}: {peer.PingMs:0} ms{RelaySuffix(peer)}");
                     }
                 }
             }
@@ -556,7 +556,28 @@ namespace GungeonTogether.Networking.Session
             if (_peers.TryGetValue(senderId, out var peer))
             {
                 peer.RecordPing(Time.realtimeSinceStartup - packet.Timestamp);
+                peer.Relayed = _transport.TryGetRelayState(senderId, out bool relayed) ? relayed : (bool?)null;
             }
+        }
+
+        /// <summary>
+        /// Status-line text for the UI, e.g. "Ping: 45 ms (direct)" - for the same peer GetPingMs
+        /// reports. Empty when not connected or not measured yet.
+        /// </summary>
+        public string GetPingText()
+        {
+            PeerConnection worst = null;
+            foreach (var peer in _peers.Values)
+            {
+                if (peer.State == ConnectionState.Connected && peer.PingMs >= 0f && (worst == null || peer.PingMs > worst.PingMs)) worst = peer;
+            }
+            return worst != null ? $"Ping: {worst.PingMs:0} ms{RelaySuffix(worst)}" : "";
+        }
+
+        private static string RelaySuffix(PeerConnection peer)
+        {
+            if (!peer.Relayed.HasValue) return "";
+            return peer.Relayed.Value ? " (relayed)" : " (direct)";
         }
 
         /// <summary>

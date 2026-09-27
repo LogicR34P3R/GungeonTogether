@@ -186,8 +186,8 @@ namespace GungeonTogether.UI
 			string lobbyText = lobby.IsInLobby ? ("Lobby: " + lobby.CurrentLobbyId) : "Lobby: (none)";
 			string roleText = NetworkSession.Instance.IsHost ? "Role: Host" : (NetworkSession.Instance.IsClient ? "Role: Client" : "Role: (none)");
 			string connText = NetworkSession.Instance.IsConnected ? "Net: Connected" : "Net: Disconnected";
-			float pingMs = NetworkSession.Instance.GetPingMs();
-			string pingText = pingMs >= 0f ? " | Ping: " + Mathf.RoundToInt(pingMs) + " ms" : "";
+			string pingText = NetworkSession.Instance.GetPingText();
+			if (pingText.Length > 0) pingText = " | " + pingText;
 
 			_statusLabel.ModifyLocalizedText("GUNGEON TOGETHER\n" + lobbyText + "\n" + roleText + " | " + connText + pingText);
 

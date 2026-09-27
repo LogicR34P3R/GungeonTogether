@@ -20,7 +20,7 @@ namespace GungeonTogether.Networking.Replication
     /// </summary>
     public class PlayerReplicator : MonoSingleton<PlayerReplicator>
     {
-        private const float PositionSendInterval = 0.25f;
+        private const float PositionSendInterval = 0.05f; // 20 Hz - slower rates add more staleness than the network ping itself
         private const float StatsSendInterval = 0.5f;
 
         private readonly Dictionary<ulong, RemotePlayerAvatar> _remotePlayers = new Dictionary<ulong, RemotePlayerAvatar>();

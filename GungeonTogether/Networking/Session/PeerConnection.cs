@@ -34,6 +34,9 @@ namespace GungeonTogether.Networking.Session
         /// <summary>Smoothed round-trip time to this peer in milliseconds, or -1 before the first measurement.</summary>
         public float PingMs { get; private set; } = -1f;
 
+        /// <summary>Whether Steam is relaying this connection (null: not known yet). Refreshed with each ping.</summary>
+        public bool? Relayed { get; set; }
+
         public void RecordPing(float roundTripSeconds)
         {
             float sampleMs = roundTripSeconds * 1000f;

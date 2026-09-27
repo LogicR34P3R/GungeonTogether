@@ -82,6 +82,16 @@ namespace GungeonTogether.Networking.Transport
             return ok;
         }
 
+        public bool TryGetRelayState(ulong peerId, out bool relayed)
+        {
+            relayed = false;
+            if (!IsInitialised) return false;
+            if (!SteamNetworking.GetP2PSessionState(new CSteamID(peerId), out P2PSessionState_t state)) return false;
+            if (state.m_bConnectionActive == 0) return false;
+            relayed = state.m_bUsingRelay != 0;
+            return true;
+        }
+
         private void ReadPackets()
         {
             int read = 0;
