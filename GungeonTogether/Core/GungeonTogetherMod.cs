@@ -44,6 +44,9 @@ namespace GungeonTogether.Core
                 DamageReplicator.Instance.gameObject.SetActive(true);
                 ScriptReplicator.Instance.gameObject.SetActive(true);
                 PlayerShotReplicator.Instance.gameObject.SetActive(true);
+                PlayerLifeReplicator.Instance.gameObject.SetActive(true);
+                RoomObjectReplicator.Instance.gameObject.SetActive(true);
+                GenerationReplicator.Instance.gameObject.SetActive(true);
                 BindSyncOptions();
 
                 ApplyHarmonyPatches();
@@ -87,8 +90,8 @@ namespace GungeonTogether.Core
         private void BindSyncOptions()
         {
             var bossScriptReplay = Config.Bind("Sync", "BossScriptReplay", true,
-                "Host only. Replay boss attack scripts on clients so their bullet patterns match. Turn off if boss " +
-                "patterns look wrong on the client - boss bullets then fall back to straight-line copies.");
+                "Host only. Replay enemy and boss attack scripts on clients so their bullet patterns match (the name " +
+                "is historical). Turn off if patterns look wrong on the client - bullets then fall back to straight-line copies.");
 
             ScriptReplicator.Enabled = bossScriptReplay.Value;
             bossScriptReplay.SettingChanged += (_, __) => ScriptReplicator.Enabled = bossScriptReplay.Value;

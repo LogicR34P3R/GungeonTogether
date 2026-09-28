@@ -5,7 +5,9 @@ using UnityEngine;
 using Dungeonator;
 using GungeonTogether.Networking.Entities;
 using GungeonTogether.Networking.Packets;
+using GungeonTogether.Networking.Players;
 using GungeonTogether.Networking.Session;
+using GungeonTogether.Networking.Transport;
 using GungeonTogether.Systems;
 using GungeonTogether.Systems.Logging;
 using Debug = GungeonTogether.Systems.Logging.Debug;
@@ -36,6 +38,8 @@ namespace GungeonTogether.Networking.Replication
     public class EnemyReplicator : MonoSingleton<EnemyReplicator>
     {
         private const float StateSyncInterval = 0.05f; // 20 Hz; clients smooth and extrapolate between updates (NetworkPuppet)
+        // A warp into a fight is only ever a hop through the door (see WarpLocalPlayerInto).
+        private const float MaxWarpDistance = 8f;
 
         // RoomHandler keeps its pending reinforcement waves private; there's no public way to cancel them.
         private static readonly FieldInfo ReinforcementLayersField =
@@ -44,10 +48,16 @@ namespace GungeonTogether.Networking.Replication
         // Host side.
         private string _currentRoomName = "";
         private float _nextStateSyncTime;
-        // Ids synced on the previous tick. An id new on the next tick gets an EnemySpawn; one
-        // missing from it died (or otherwise left the room's active list) and gets an EnemyDeath.
-        private HashSet<int> _liveIds = new HashSet<int>();
-        private HashSet<int> _currentIds = new HashSet<int>();
+        // Every enemy the clients have (id -> enemy) for this level; see SyncEnemyStates.
+        private readonly Dictionary<int, AIActor> _synced = new Dictionary<int, AIActor>();
+        private readonly HashSet<int> _currentIds = new HashSet<int>();
+        private readonly List<int> _goneIds = new List<int>();
+        // Dead enemies still playing their death (id -> when it started); see SyncEnemyStates.
+        private readonly Dictionary<int, float> _dyingSince = new Dictionary<int, float>();
+        private const float MaxDyingSeconds = 8f;
+        private readonly List<RoomHandler> _syncedRooms = new List<RoomHandler>();
+        // Each client's current room (ClientEnteredRoom), by name.
+        private readonly Dictionary<ulong, string> _clientRooms = new Dictionary<ulong, string>();
 
         // Host side: the room whose doors are sealed right now, for a joining client's snapshot.
         private string _hostSealedRoom;
@@ -106,6 +116,10 @@ namespace GungeonTogether.Networking.Replication
             GameManager gm = GameManager.Instance;
             if (gm == null || gm.IsLoadingLevel || gm.IsFoyer || gm.Dungeon == null) return;
 
+            // Its enemies get synced from now on, whether or not the host comes along (SyncedRooms).
+            _clientRooms[senderId] = packet.RoomName ?? "";
+            _nextStateSyncTime = 0f;
+
             RoomHandler room = FindRoomByName(packet.RoomName);
             PlayerController host = gm.PrimaryPlayer;
             if (room == null || host == null) return;
@@ -161,9 +175,16 @@ namespace GungeonTogether.Networking.Replication
                 room.OnSealChanged = (Action<bool>)Delegate.Combine(room.OnSealChanged, new Action<bool>(isSealed => OnHostRoomSealChanged(captured, isSealed)));
             }
 
-            // Rooms from the previous level are gone.
+            // Rooms and enemies from the previous level are gone.
             _hostSealedRoom = null;
             _networkSealedRooms.Clear();
+            _synced.Clear();
+            _dyingSince.Clear();
+            _clientRooms.Clear();
+            _bossBars.Clear();
+            _currentRoomName = "";
+            _reportedRoom = null;
+            NetworkEntityManager.Instance.Clear();
 
             if (NetworkSession.Instance.IsClient)
             {
@@ -176,21 +197,42 @@ namespace GungeonTogether.Networking.Replication
         /// <summary>
         /// Brings the local player into a room another player is fighting in, if they're elsewhere:
         /// the client when the host's room seals, the host when a client enters a combat room first.
-        /// Lands on the free floor cell nearest that player's last known position - their own spot
-        /// once they're inside, and still a valid cell if their avatar lags at the doorway.
+        /// Only a short hop through the door, now that doors wait for both players (PlayerReplicator.CanOpenDoor).
+        ///
+        /// Like vanilla co-op's ReuniteWithOtherPlayer, lands exactly where that player stands - a
+        /// spot a player can provably be. Only if their avatar is still outside the room (it lags at
+        /// the doorway) does it fall back to the nearest free floor cell, which once picked a closed-off
+        /// pocket of a room and left the host unable to move.
         /// </summary>
         private static void WarpLocalPlayerInto(RoomHandler room, ulong towardsPeerId)
         {
             PlayerController player = GameManager.Instance.PrimaryPlayer;
             if (player == null || player.CurrentRoom == room) return;
-            if (player.healthHaver != null && player.healthHaver.IsDead) return;
+            // A ghost comes along too: a ghost host must still enter the room to wake its enemies.
+            if (player.healthHaver != null && player.healthHaver.IsDead && !player.IsGhost) return;
             if (player.IsInMinecart) return;
 
-            Vector2 target = room.GetCenterCell().ToVector2();
-            if (PlayerReplicator.Instance.TryGetRemotePosition(towardsPeerId, out Vector2 otherPos)) target = otherPos;
+            // Doors wait for both players (PlayerReplicator.CanOpenDoor), so the other player is
+            // right at the doorway: this is a hop through the door, like vanilla co-op pushing the
+            // second player in. Never a cross-map teleport - someone far away stays where they are.
+            if (!PlayerReplicator.Instance.TryGetRemotePosition(towardsPeerId, out Vector2 otherPos)) return;
+            if (Vector2.Distance(player.transform.position, otherPos) > MaxWarpDistance)
+            {
+                Debug.LogInfo($"[EnemyReplicator] Not warping into {room.GetRoomName()}: too far from {towardsPeerId}.");
+                return;
+            }
 
             DungeonData data = GameManager.Instance.Dungeon.data;
-            IntVector2? cell = room.GetNearestAvailableCell(target, IntVector2.One, CellTypes.FLOOR, false,
+            CellData otherCell = data[otherPos.ToIntVector2(VectorConversions.Floor)];
+            if (otherCell != null && otherCell.parentRoom == room && otherCell.type == CellType.FLOOR)
+            {
+                player.WarpToPoint(otherPos, useDefaultPoof: true, doFollowers: true);
+                PhysicsEngine.Instance.RegisterOverlappingGhostCollisionExceptions(player.specRigidbody);
+                Debug.LogInfo($"[EnemyReplicator] Warped onto {towardsPeerId} in {room.GetRoomName()} to join their fight.");
+                return;
+            }
+
+            IntVector2? cell = room.GetNearestAvailableCell(otherPos, IntVector2.One, CellTypes.FLOOR, false,
                 pos => !data[pos].IsPlayerInaccessible);
             if (!cell.HasValue)
             {
@@ -244,21 +286,73 @@ namespace GungeonTogether.Networking.Replication
             if (Time.time >= _nextStateSyncTime)
             {
                 _nextStateSyncTime = Time.time + StateSyncInterval;
-                SyncEnemyStates(room);
+                SyncEnemyStates();
             }
         }
 
         private void OnRoomChanged(string roomName)
         {
-            // A fresh room means every id assigned in the previous one is meaningless now -
-            // clear on both sides so a late/duplicate packet can't resurrect a stale enemy id.
-            NetworkEntityManager.Instance.Clear();
-            _liveIds.Clear();
+            // Just the fallback room for a spawn that names none; ids live for the whole level.
             NetworkSession.Instance.Broadcast(new RoomChangePacket { RoomName = roomName });
-
-            // With _liveIds empty, the next sync spawns every enemy in the room. Run it this frame
-            // rather than waiting out the interval.
+            // Sync the new room's enemies this frame rather than waiting out the interval.
             _nextStateSyncTime = 0f;
+        }
+
+        // A target switch needs the other player this much closer, so an enemy between two players
+        // doesn't flip back and forth (and interrupt its attacks) every frame.
+        private const float RetargetMargin = 1f;
+
+        /// <summary>
+        /// Host: TargetPlayerBehavior.Update postfix. The game picks targets from local players only,
+        /// so remote players were never attacked, and with the host a ghost nobody was. Re-picks the
+        /// nearest living player - the host, or a remote player's stand-in in the enemy's room.
+        /// </summary>
+        public static void OnTargetSearch(BehaviorSpeculator speculator)
+        {
+            if (!NetworkSession.Instance.IsHost || speculator == null) return;
+            AIActor enemy = speculator.aiActor;
+            if (enemy == null || enemy.CompanionOwner != null || !enemy.CanTargetPlayers || enemy.CanTargetEnemies) return;
+            if (enemy.specRigidbody == null) return;
+
+            Vector2 from = enemy.specRigidbody.UnitCenter;
+            GameActor current = speculator.PlayerTarget;
+            GameActor best = null;
+            float bestDistance = float.MaxValue, currentDistance = float.MaxValue;
+
+            void Consider(GameActor candidate)
+            {
+                float distance = Vector2.Distance(from, candidate.CenterPosition);
+                if (candidate == current) currentDistance = distance;
+                if (distance < bestDistance)
+                {
+                    best = candidate;
+                    bestDistance = distance;
+                }
+            }
+
+            PlayerController host = GameManager.Instance.PrimaryPlayer;
+            if (host != null && !host.IsGhost && !host.healthHaver.IsDead && !host.IsFalling && !host.IsStealthed) Consider(host);
+
+            DungeonData data = GameManager.Instance.Dungeon != null ? GameManager.Instance.Dungeon.data : null;
+            foreach (RemotePlayerTarget target in PlayerReplicator.Instance.LivingEnemyTargets())
+            {
+                // Only in the enemy's own room: the stand-in is never in a room for the game's own
+                // room logic, and enemies shouldn't chase a player through walls.
+                RoomHandler targetRoom = data != null ? data.GetAbsoluteRoomFromPosition(target.CenterPosition.ToIntVector2(VectorConversions.Floor)) : null;
+                if (targetRoom != null && targetRoom == enemy.ParentRoom) Consider(target);
+            }
+
+            if (best == null)
+            {
+                // Everyone left or died; drop a stand-in the game itself would never clear.
+                if (current is RemotePlayerTarget) speculator.PlayerTarget = null;
+                return;
+            }
+            if (best == current || currentDistance <= bestDistance + RetargetMargin) return;
+
+            speculator.PlayerTarget = best;
+            enemy.HasBeenEngaged = true;
+            if (enemy.aiShooter != null) enemy.aiShooter.AimAtPoint(best.CenterPosition);
         }
 
         private void OnHostRoomCleared(RoomHandler room)
@@ -275,6 +369,7 @@ namespace GungeonTogether.Networking.Replication
             if (!NetworkSession.Instance.IsHost) return;
             NetworkSession.Instance.Broadcast(new FloorClearedPacket(), reliable: true);
             Debug.LogInfo("[EnemyReplicator] Host cleared the floor.");
+            PlayerLifeReplicator.Instance.OnFloorCleared(); // vanilla revives co-op ghosts on the boss kill
         }
 
         private void OnHostRoomSealChanged(RoomHandler room, bool isSealed)
@@ -297,7 +392,7 @@ namespace GungeonTogether.Networking.Replication
             NetworkSession.Instance.SendPacket(targetId, new RoomSealStatePacket { RoomName = _hostSealedRoom, Sealed = true }, reliable: true);
         }
 
-        private void BroadcastSpawn(AIActor enemy)
+        private void BroadcastSpawn(AIActor enemy, RoomHandler room)
         {
             // The EnemyDatabase guid - what the client's GetOrLoadByGuid and boss adoption look up.
             // Not encounterTrackable.EncounterGuid: that's the Ammonomicon entry, which differs for
@@ -313,53 +408,135 @@ namespace GungeonTogether.Networking.Replication
                 Position = enemy.transform.position,
                 Rotation = enemy.transform.eulerAngles.z,
                 Health = enemy.healthHaver != null ? Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()) : 0,
-                IsBoss = enemy.healthHaver != null && enemy.healthHaver.IsBoss
+                IsBoss = enemy.healthHaver != null && enemy.healthHaver.IsBoss,
+                RoomName = room.GetRoomName()
             };
             NetworkSession.Instance.Broadcast(packet, reliable: true);
         }
 
-        private void SyncEnemyStates(RoomHandler room)
+        /// <summary>
+        /// The rooms whose enemies are synced: every room a player is in - the host's, and each
+        /// client's last reported room. Only syncing the host's room left a client alone in a
+        /// hallway (which doesn't seal) facing enemies it couldn't see, hit, or be hit by.
+        /// </summary>
+        private List<RoomHandler> SyncedRooms()
+        {
+            _syncedRooms.Clear();
+            RoomHandler hostRoom = CurrentRoom();
+            if (hostRoom != null) _syncedRooms.Add(hostRoom);
+            foreach (string roomName in _clientRooms.Values)
+            {
+                RoomHandler room = FindRoomByName(roomName);
+                if (room != null && !_syncedRooms.Contains(room)) _syncedRooms.Add(room);
+            }
+            return _syncedRooms;
+        }
+
+        private void SyncEnemyStates()
         {
             _currentIds.Clear();
 
-            List<AIActor> enemies = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
-            if (enemies != null)
+            foreach (RoomHandler room in SyncedRooms())
             {
+                List<AIActor> enemies = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
+                if (enemies == null) continue;
                 foreach (AIActor enemy in enemies)
                 {
                     // A dying enemy can still be in the active list for a frame or two - treat it as gone.
                     if (enemy == null || enemy.healthHaver == null || enemy.healthHaver.IsDead) continue;
 
                     int id = NetworkEntityManager.Instance.GetOrAssignId(enemy);
-                    _currentIds.Add(id);
+                    if (!_currentIds.Add(id)) continue;
 
-                    // Not synced last tick: either the room was just entered, or it appeared mid-room
-                    // (reinforcement wave, summon). Either way the client doesn't have it yet.
-                    if (!_liveIds.Contains(id)) BroadcastSpawn(enemy);
-
-                    var packet = new EnemyStatePacket
+                    // New to the clients: its room just got a player in it, or it appeared mid-room
+                    // (reinforcement wave, summon).
+                    if (!_synced.ContainsKey(id))
                     {
-                        EnemyId = id,
-                        Position = enemy.transform.position,
-                        Rotation = enemy.transform.eulerAngles.z,
-                        Health = Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()),
-                        MaxHealth = Mathf.RoundToInt(enemy.healthHaver.GetMaxHealth()),
-                        AIState = (int)enemy.State
-                    };
-                    NetworkSession.Instance.Broadcast(packet, reliable: false);
+                        _synced[id] = enemy;
+                        BroadcastSpawn(enemy, room);
+                    }
+
+                    NetworkSession.Instance.Broadcast(StatePacket(id, enemy, dying: false), reliable: false);
                 }
             }
 
-            foreach (int id in _liveIds)
+            // Synced before but not seen this tick. Only a real death or disappearance ends it: an
+            // enemy whose room merely has no player in it any more stays, and its client copy just
+            // waits for the next update. Deaths used to be inferred from "not in the host's room",
+            // so any death after the host walked out was never sent (seen with a Bullet Bros twin).
+            _goneIds.Clear();
+            foreach (var kv in _synced)
             {
-                if (_currentIds.Contains(id)) continue;
-                NetworkSession.Instance.Broadcast(new EnemyDeathPacket { EnemyId = id }, reliable: true);
-                Debug.Log($"[EnemyReplicator] Enemy {id} died, broadcast EnemyDeath.");
-            }
+                if (_currentIds.Contains(kv.Key)) continue;
+                AIActor enemy = kv.Value;
+                bool killed = enemy != null && enemy.healthHaver != null && enemy.healthHaver.IsDead;
 
-            var swap = _liveIds;
-            _liveIds = _currentIds;
-            _currentIds = swap;
+                // Dead but still there: its death is playing. Keep sending its animation so the
+                // client shows the real death (not a stand-in), until the object goes or it's been long enough.
+                if (killed)
+                {
+                    if (!_dyingSince.TryGetValue(kv.Key, out float since)) _dyingSince[kv.Key] = since = Time.time;
+                    if (Time.time - since < MaxDyingSeconds)
+                    {
+                        NetworkSession.Instance.Broadcast(StatePacket(kv.Key, enemy, dying: true), reliable: false);
+                        continue;
+                    }
+                }
+
+                bool vanished = enemy == null || enemy.ParentRoom == null || !IsActiveIn(enemy, enemy.ParentRoom);
+                if (!killed && !vanished) continue;
+
+                _goneIds.Add(kv.Key);
+                killed |= _dyingSince.ContainsKey(kv.Key); // destroyed at the end of its death
+                _dyingSince.Remove(kv.Key);
+                NetworkSession.Instance.Broadcast(new EnemyDeathPacket { EnemyId = kv.Key, Killed = killed }, reliable: true);
+                bool isBoss = enemy != null && enemy.healthHaver != null && enemy.healthHaver.IsBoss;
+                if (isBoss) Debug.LogInfo($"[EnemyReplicator] Boss {kv.Key} {(killed ? "died" : "left")}, broadcast EnemyDeath.");
+                else Debug.Log($"[EnemyReplicator] Enemy {kv.Key} {(killed ? "died" : "left")}, broadcast EnemyDeath.");
+            }
+            foreach (int id in _goneIds) _synced.Remove(id);
+        }
+
+        /// <summary>
+        /// Position, health, and what the enemy looks like right now: its animation clip and frame,
+        /// facing, and gun aim. The puppet's AI is off, so without these it never showed attacks,
+        /// charge-ups (e.g. a bomb enemy about to blow) or its real death.
+        /// </summary>
+        private static EnemyStatePacket StatePacket(int id, AIActor enemy, bool dying)
+        {
+            tk2dSpriteAnimator animator = enemy.spriteAnimator;
+            tk2dSpriteAnimationClip clip = animator != null ? animator.CurrentClip : null;
+            Gun gun = enemy.aiShooter != null ? enemy.aiShooter.CurrentGun : null;
+            return new EnemyStatePacket
+            {
+                EnemyId = id,
+                Position = enemy.transform.position,
+                Rotation = enemy.transform.eulerAngles.z,
+                Health = Mathf.RoundToInt(enemy.healthHaver.GetCurrentHealth()),
+                MaxHealth = Mathf.RoundToInt(enemy.healthHaver.GetMaxHealth()),
+                AIState = (int)enemy.State,
+                Clip = clip != null ? clip.name ?? "" : "",
+                Frame = clip != null ? animator.CurrentFrame : 0,
+                FlipX = enemy.sprite != null && enemy.sprite.FlipX,
+                Dying = dying,
+                HasGun = gun != null,
+                GunAngle = gun != null ? gun.CurrentAngle : 0f,
+                TargetId = TargetIdOf(enemy.PlayerTarget)
+            };
+        }
+
+        /// <summary>Host: the steam id of the player an enemy targets - the host itself, or a client's stand-in.</summary>
+        private static ulong TargetIdOf(GameActor target)
+        {
+            if (target is PlayerController) return SteamIdentity.GetLocalSteamId();
+            RemotePlayerTarget standIn = target as RemotePlayerTarget;
+            return standIn != null ? standIn.SteamId : 0UL;
+        }
+
+        private static bool IsActiveIn(AIActor enemy, RoomHandler room)
+        {
+            List<AIActor> active = room.GetActiveEnemies(RoomHandler.ActiveEnemyType.All);
+            return active != null && active.Contains(enemy);
         }
 
         // ---- Client: suppress native fights ----
@@ -434,11 +611,13 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Client: host enemies as puppets ----
 
+        /// <summary>
+        /// Only records the host's room now. It used to destroy every puppet: enemies were only
+        /// synced from the host's room, so each host room change wiped the client's copies.
+        /// </summary>
         public void HandleRoomChange(RoomChangePacket packet)
         {
             _hostRoomName = packet.RoomName ?? "";
-            NetworkEntityManager.Instance.Clear();
-            _pendingSpawns.Clear(); // spawns buffered for the previous room are stale now
         }
 
         public void HandleSpawn(EnemySpawnPacket packet)
@@ -474,9 +653,9 @@ namespace GungeonTogether.Networking.Replication
                 return;
             }
 
-            // The host's room, by name - requires the shared seed to have produced the same layout.
-            // Falls back to wherever we are if it can't be found.
-            RoomHandler room = FindRoomByName(_hostRoomName) ?? CurrentRoom();
+            // The enemy's own host room, by name - requires the shared seed to have produced the same
+            // layout. Falls back to the host's room, then wherever we are.
+            RoomHandler room = FindRoomByName(packet.RoomName) ?? FindRoomByName(_hostRoomName) ?? CurrentRoom();
             if (room == null) return;
 
             if (packet.IsBoss && TryAdoptNativeBoss(room, packet)) return;
@@ -486,6 +665,49 @@ namespace GungeonTogether.Networking.Replication
 
             MakePuppet(spawned, packet.EnemyId);
             NetworkEntityManager.Instance.AddRemote(packet.EnemyId, spawned.gameObject);
+
+            // Many enemies spawn hidden until they wake (invisibleUntilAwaken: renderers off, no
+            // collisions, IsGone) and wake when their AI first engages a player - which a puppet's
+            // never does, so they stayed invisible and unhittable for the whole fight. Engaging runs
+            // AIActor.OnEngaged: visible, plays its appear animation, and AIActor.Update restores
+            // the hitbox once that ends. Bosses are left to their intro.
+            if (!packet.IsBoss) spawned.HasBeenEngaged = true;
+        }
+
+        // Client: boss health bars already shown.
+        private static readonly HashSet<HealthHaver> _bossBars = new HashSet<HealthHaver>();
+
+        /// <summary>
+        /// A boss's bar is registered by AIActor.OnEngaged, which a puppet (AI off) never reaches -
+        /// so the client saw no boss health bar. Registered the same way here, once its intro is over.
+        /// </summary>
+        private static void ShowBossBar(AIActor actor, HealthHaver health)
+        {
+            if (_bossBars.Contains(health) || !health.HasHealthBar || GameManager.IsBossIntro || !GameUIRoot.HasInstance) return;
+            _bossBars.Add(health);
+
+            GameUIRoot ui = GameUIRoot.Instance;
+            GameUIBossHealthController bar = health.UsesVerticalBossBar ? ui.bossControllerSide
+                : health.UsesSecondaryBossBar ? ui.bossController2 : ui.bossController;
+            if (bar == null) return;
+            string bossName = !string.IsNullOrEmpty(health.overrideBossName)
+                ? StringTableManager.GetEnemiesString(health.overrideBossName)
+                : actor.GetActorName();
+            bar.RegisterBossHealthHaver(health, bossName);
+        }
+
+        /// <summary>One boss's bar goes; the rest stay up while another boss (e.g. the other twin) lives.</summary>
+        private static void RemoveBossBar(HealthHaver health)
+        {
+            _bossBars.Remove(health);
+            GameUIRoot ui = GameUIRoot.HasInstance ? GameUIRoot.Instance : null;
+            if (ui == null) return;
+            if (ui.bossController != null) ui.bossController.DeregisterBossHealthHaver(health);
+            if (ui.bossController2 != null) ui.bossController2.DeregisterBossHealthHaver(health);
+            if (ui.bossControllerSide != null) ui.bossControllerSide.DeregisterBossHealthHaver(health);
+
+            _bossBars.RemoveWhere(h => h == null);
+            if (_bossBars.Count == 0) HideBossHealthBars();
         }
 
         /// <summary>Links the host's boss to our own neutralised copy of it (same guid, same room).</summary>
@@ -539,6 +761,8 @@ namespace GungeonTogether.Networking.Replication
                 puppet.ApplyState(packet.Position, pingMs > 0f ? pingMs / 2000f : 0f);
             }
             remote.transform.rotation = Quaternion.Euler(0, 0, packet.Rotation);
+            AIActor lookActor = remote.GetComponent<AIActor>();
+            if (lookActor != null) ApplyLook(lookActor, puppet, packet);
 
             // Boss health bars read the puppet's own HealthHaver, which never takes local damage -
             // mirror the host's boss instead. ForceSetCurrentHealth can't kill (death comes from
@@ -548,21 +772,113 @@ namespace GungeonTogether.Networking.Replication
             {
                 if (Mathf.Abs(health.GetMaxHealth() - packet.MaxHealth) > 0.5f) health.SetHealthMaximum(packet.MaxHealth);
                 if (Mathf.Abs(health.GetCurrentHealth() - packet.Health) > 0.5f) health.ForceSetCurrentHealth(packet.Health);
+                AIActor bossActor = remote.GetComponent<AIActor>();
+                if (bossActor != null) ShowBossBar(bossActor, health);
             }
         }
+
+        /// <summary>
+        /// Shows the host enemy's animation on its puppet: the clip it's playing (switched when the
+        /// host switches, then run locally at the clip's own speed), facing and gun aim. The
+        /// puppet's AIAnimator is switched off so it doesn't pick its own clips over the host's -
+        /// for a boss only after its intro, which the AIAnimator drives.
+        /// </summary>
+        private static void ApplyLook(AIActor actor, NetworkPuppet puppet, EnemyStatePacket packet)
+        {
+            if (actor.healthHaver != null && actor.healthHaver.IsBoss && GameManager.IsBossIntro) return;
+            if (actor.aiAnimator != null && actor.aiAnimator.enabled) actor.aiAnimator.enabled = false;
+
+            tk2dSpriteAnimator animator = actor.spriteAnimator;
+            if (animator != null && !string.IsNullOrEmpty(packet.Clip)
+                && (animator.CurrentClip == null || animator.CurrentClip.name != packet.Clip))
+            {
+                tk2dSpriteAnimationClip clip = animator.GetClipByName(packet.Clip);
+                if (clip != null && clip.frames != null && clip.frames.Length > 0)
+                {
+                    animator.PlayFromFrame(clip, Mathf.Clamp(packet.Frame, 0, clip.frames.Length - 1));
+                }
+            }
+            if (actor.sprite != null) actor.sprite.FlipX = packet.FlipX;
+            if (packet.HasGun && actor.aiShooter != null)
+            {
+                actor.aiShooter.AimInDirection(BraveMathCollege.DegreesToVector(packet.GunAngle));
+            }
+
+            // Same target as the host's enemy: replayed bullet scripts aim at the puppet's target
+            // (BulletManager.PlayerPosition), and with the AI off it had none - scripts aimed at a
+            // fallback point instead of at a player.
+            GameActor target = TargetFor(packet.TargetId);
+            if (target != null && actor.PlayerTarget != target) actor.PlayerTarget = target;
+
+            if (packet.Dying && puppet != null && !puppet.SawDying)
+            {
+                // Dying on the host: nothing may hit it any more (a hit would go to a dead enemy).
+                puppet.SawDying = true;
+                if (actor.specRigidbody != null) actor.specRigidbody.enabled = false;
+                if (actor.aiShooter != null) actor.aiShooter.ToggleGunAndHandRenderers(false, "death");
+            }
+        }
+
+        /// <summary>Client: our own player, or the stand-in on another player's avatar.</summary>
+        private static GameActor TargetFor(ulong steamId)
+        {
+            if (steamId == 0) return null;
+            if (steamId == SteamIdentity.GetLocalSteamId()) return GameManager.Instance.PrimaryPlayer;
+            return PlayerReplicator.Instance.TryGetEnemyTarget(steamId, out RemotePlayerTarget standIn) ? standIn : null;
+        }
+
+        // Longest a dead puppet lingers for its death animation.
+        private const float MaxDeathAnimSeconds = 3f;
 
         public void HandleDeath(EnemyDeathPacket packet)
         {
             GameObject remote = NetworkEntityManager.Instance.GetRemote(packet.EnemyId);
-            HealthHaver health = remote != null ? remote.GetComponent<HealthHaver>() : null;
-            if (health != null && health.IsBoss) HideBossHealthBars();
+            NetworkEntityManager.Instance.ForgetRemote(packet.EnemyId);
+            if (remote == null) return;
+
+            HealthHaver health = remote.GetComponent<HealthHaver>();
+            if (health != null && health.IsBoss)
+            {
+                RemoveBossBar(health);
+                Debug.LogInfo($"[EnemyReplicator] Host's boss {packet.EnemyId} {(packet.Killed ? "died" : "left")}.");
+            }
 
             // AIActor.OnDestroy deliberately skips deregistering bosses, which would leave a destroyed
             // boss puppet in its room's enemy list - so deregister explicitly, clear checks suppressed.
-            AIActor actor = remote != null ? remote.GetComponent<AIActor>() : null;
+            AIActor actor = remote.GetComponent<AIActor>();
             if (actor != null && actor.ParentRoom != null) actor.ParentRoom.DeregisterEnemy(actor, suppressClearChecks: true);
 
-            NetworkEntityManager.Instance.RemoveRemote(packet.EnemyId);
+            // Normally the host's death animation already played here (EnemyState.Dying); the
+            // stand-in death is only for an enemy whose dying frames never arrived.
+            NetworkPuppet deadPuppet = remote.GetComponent<NetworkPuppet>();
+            bool deathShown = deadPuppet != null && deadPuppet.SawDying;
+            float linger = packet.Killed && actor != null && !deathShown ? PlayDeathVisuals(actor) : 0f;
+            Destroy(remote, linger);
+        }
+
+        /// <summary>
+        /// The look of a death only: the "death" animation and the death effect. The game's own
+        /// HealthHaver.Die also runs on-death bullet scripts, loot and boss sequences - things that
+        /// already happened for real on the host. Returns how long the corpse should stay.
+        /// </summary>
+        private static float PlayDeathVisuals(AIActor actor)
+        {
+            _puppets.Remove(actor);
+            NetworkPuppet puppet = actor.GetComponent<NetworkPuppet>();
+            if (puppet != null) puppet.enabled = false; // stop extrapolating the last velocity
+            if (actor.specRigidbody != null) actor.specRigidbody.enabled = false; // nothing hits a corpse
+            if (actor.aiShooter != null) actor.aiShooter.ToggleGunAndHandRenderers(false, "death");
+
+            HealthHaver health = actor.healthHaver;
+            if (health != null && health.deathEffect != null)
+            {
+                SpawnManager.SpawnVFX(health.deathEffect, actor.transform.position, Quaternion.identity);
+            }
+
+            if (actor.aiAnimator == null || !actor.aiAnimator.HasDirectionalAnimation("death")) return 0f;
+            actor.aiAnimator.PlayUntilFinished("death");
+            tk2dSpriteAnimationClip clip = actor.spriteAnimator != null ? actor.spriteAnimator.CurrentClip : null;
+            return clip != null ? Mathf.Clamp(clip.BaseClipLength, 0f, MaxDeathAnimSeconds) : 0f;
         }
 
         public void HandleFloorCleared()
@@ -572,6 +888,7 @@ namespace GungeonTogether.Networking.Replication
             HideBossHealthBars();
             gm.Dungeon.FloorCleared();
             Debug.LogInfo("[EnemyReplicator] Floor cleared by the host.");
+            PlayerLifeReplicator.Instance.OnFloorCleared();
         }
 
         /// <summary>The puppet boss is removed abruptly (no death sequence yet), so its bar is hidden by hand.</summary>
@@ -625,10 +942,19 @@ namespace GungeonTogether.Networking.Replication
             }
             else if (!isSealed && room.IsSealed)
             {
+                _networkSealedRooms.Remove(room); // first: AllowUnseal blocks rooms still in the list
                 room.UnsealRoom();
-                _networkSealedRooms.Remove(room);
             }
         }
+
+        /// <summary>
+        /// RoomHandler.UnsealRoom prefix. Every frame a player stands in a room, the game unseals it
+        /// if it has no enemies that count towards the clear. A client's puppets never count
+        /// (IgnoreForRoomClear), so a room the host sealed would reopen on the very next frame and
+        /// the client could walk out mid-fight. On a client, only the host opens a room it sealed.
+        /// </summary>
+        public static bool AllowUnseal(RoomHandler room) =>
+            !NetworkSession.Instance.IsClient || !Instance._networkSealedRooms.Contains(room);
 
         public void HandleRoomCleared(RoomClearedPacket packet)
         {
@@ -642,8 +968,8 @@ namespace GungeonTogether.Networking.Replication
             // Normally a RoomSealState(false) handles this; belt and braces in case it was missed.
             if (room != null && room.IsSealed)
             {
+                _networkSealedRooms.Remove(room); // first: see AllowUnseal
                 room.UnsealRoom();
-                _networkSealedRooms.Remove(room);
             }
             Debug.Log($"[EnemyReplicator] Host cleared room {packet.RoomName}.");
         }
@@ -653,10 +979,13 @@ namespace GungeonTogether.Networking.Replication
         {
             // Don't leave the client locked in a room whose fight will never finish: the host that
             // was going to clear it is gone.
+            // Emptied first: see AllowUnseal.
+            var sealedRooms = new List<RoomHandler>(_networkSealedRooms);
+            _networkSealedRooms.Clear();
             GameManager gm = GameManager.Instance;
             if (gm != null && !gm.IsLoadingLevel)
             {
-                foreach (RoomHandler room in _networkSealedRooms)
+                foreach (RoomHandler room in sealedRooms)
                 {
                     try
                     {
@@ -671,7 +1000,10 @@ namespace GungeonTogether.Networking.Replication
             _networkSealedRooms.Clear();
 
             _currentRoomName = "";
-            _liveIds.Clear();
+            _synced.Clear();
+            _dyingSince.Clear();
+            _clientRooms.Clear();
+            _bossBars.Clear();
             _hostSealedRoom = null;
             _hostRoomName = "";
             _reportedRoom = null;

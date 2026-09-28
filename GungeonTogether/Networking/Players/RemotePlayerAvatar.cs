@@ -27,26 +27,62 @@ namespace GungeonTogether.Networking.Players
         private const float SnapDistance = 4f; // a jump this big is a teleport, not movement - don't slide
         private const int MaxSnapshots = 32;
 
+        // Clock mapping (local time minus sender time): the smallest arrival delay seen over the
+        // last one to two windows. The render clock slews towards it at most this fast, so a change
+        // never shows as a jump; only a large one (a hitch, a reconnect) is snapped.
+        private const float ClockWindow = 1f;
+        private const float ClockSlewRate = 0.05f; // seconds per second: plays at most 5% fast/slow
+        private const float ClockSnapThreshold = 0.5f;
+
+        // Live player sprites sit on whole pixels (the physics engine moves in 1/16-unit steps).
+        // An avatar between pixels rounds differently each frame as the camera moves, and shimmers.
+        private const float PixelsPerUnit = 16f;
+
+        private static readonly Color GhostTint = new Color(0.45f, 0.55f, 1f, 1f);
+
         private struct Snapshot
         {
             public float Time; // sender clock
             public Vector2 Position;
             public float Rotation;
             public bool FlipX;
+            public Vector2 SpriteOffset;
             public int SpriteId;
+            public int GunId;
+            public int GunSpriteId;
+            public Vector2 GunOffset;
+            public float GunAngle;
+            public bool GunFlipY;
+            public float GunHeight;
+            public bool GunVisible;
         }
 
         private readonly List<Snapshot> _snapshots = new List<Snapshot>();
-        // Local time minus sender time, tracked from the fastest-arriving packets (see Apply).
-        private float _clockOffset;
+        private float _clockOffset;      // what rendering uses
+        private float _clockTarget;      // min delay over the current and previous window
+        private float _windowMin, _previousWindowMin;
+        private float _windowStart;
         private bool _hasClockOffset;
 
         private tk2dSprite _sprite;
         private Transform _spriteTransform;
+        private Color _baseColor = Color.white;
+        private bool _isGhost;
         private Vector3 _targetPosition;
         private int _characterId = UnknownCharacter;
         private int _spriteId = -1;
         private bool _flipX;
+
+        private tk2dSprite _gunSprite;
+        private int _gunId = -1;
+
+        /// <summary>See RemotePlayerTarget.</summary>
+        public RemotePlayerTarget EnemyTarget { get; private set; }
+
+        public void EnableEnemyTarget(ulong steamId)
+        {
+            if (EnemyTarget == null) EnemyTarget = RemotePlayerTarget.Create(transform, steamId);
+        }
 
         // Last known stats for this remote player. Nothing renders these yet (no remote HUD
         // exists), but they belong here - on the specific remote player they describe - rather
@@ -76,33 +112,90 @@ namespace GungeonTogether.Networking.Players
             return avatar;
         }
 
-        public void Apply(Vector2 position, float rotation, bool flipX, int characterId, int spriteId, float sendTime)
+        public void Apply(PlayerPositionPacket packet)
         {
             float now = Time.realtimeSinceStartup;
             LastUpdateTime = now;
-
-            // The lowest (arrival - send) seen is the least-delayed packet: the best local↔sender
-            // clock mapping. Creep towards later samples slowly, to follow clock drift and a
-            // lasting latency change without reacting to a single late packet.
-            float offset = now - sendTime;
-            if (!_hasClockOffset || offset < _clockOffset) _clockOffset = offset;
-            else _clockOffset += (offset - _clockOffset) * 0.02f;
-            _hasClockOffset = true;
+            TrackClock(now, now - packet.SendTime);
 
             // Unreliable packets can arrive out of order; the stale ones add nothing.
-            if (_snapshots.Count > 0 && sendTime <= _snapshots[_snapshots.Count - 1].Time) return;
+            if (_snapshots.Count > 0 && packet.SendTime <= _snapshots[_snapshots.Count - 1].Time) return;
 
-            _snapshots.Add(new Snapshot { Time = sendTime, Position = position, Rotation = rotation, FlipX = flipX, SpriteId = spriteId });
+            _snapshots.Add(new Snapshot
+            {
+                Time = packet.SendTime,
+                Position = packet.Position,
+                Rotation = packet.Rotation,
+                FlipX = packet.FlipX,
+                SpriteOffset = packet.SpriteOffset,
+                SpriteId = packet.SpriteId,
+                GunId = packet.GunId,
+                GunSpriteId = packet.GunSpriteId,
+                GunOffset = packet.GunOffset,
+                GunAngle = packet.GunAngle,
+                GunFlipY = packet.GunFlipY,
+                GunHeight = packet.GunHeight,
+                GunVisible = packet.GunVisible
+            });
             if (_snapshots.Count > MaxSnapshots) _snapshots.RemoveAt(0);
-            _targetPosition = new Vector3(position.x, position.y, 0f);
+            _targetPosition = new Vector3(packet.Position.x, packet.Position.y, 0f);
 
-            if (characterId != _characterId)
+            if (packet.CharacterId != _characterId)
             {
                 // First packet, or they picked another character in the Breach: rebuild from that prefab.
-                _characterId = characterId;
+                _characterId = packet.CharacterId;
                 DestroySprite();
             }
             if (_sprite == null) TryCreateSprite();
+        }
+
+        /// <summary>
+        /// The least-delayed packet gives the best local↔sender clock mapping. The old approach -
+        /// jump down to any new minimum, creep up otherwise - made a sawtooth: every few seconds the
+        /// avatar skipped ahead by the network jitter. A windowed minimum and a rate-limited render
+        /// clock follow drift and latency changes without ever jumping.
+        /// </summary>
+        private void TrackClock(float now, float delay)
+        {
+            if (!_hasClockOffset)
+            {
+                _hasClockOffset = true;
+                _windowStart = now;
+                _windowMin = _previousWindowMin = _clockTarget = _clockOffset = delay;
+                return;
+            }
+
+            if (now - _windowStart >= ClockWindow)
+            {
+                _previousWindowMin = _windowMin;
+                _windowMin = delay;
+                _windowStart = now;
+            }
+            else if (delay < _windowMin)
+            {
+                _windowMin = delay;
+            }
+            _clockTarget = Mathf.Min(_windowMin, _previousWindowMin);
+        }
+
+        private void AdvanceClock()
+        {
+            float error = _clockTarget - _clockOffset;
+            if (Mathf.Abs(error) > ClockSnapThreshold) _clockOffset = _clockTarget;
+            else _clockOffset += Mathf.Clamp(error, -ClockSlewRate * Time.unscaledDeltaTime, ClockSlewRate * Time.unscaledDeltaTime);
+        }
+
+        /// <summary>Co-op ghost look while that player is dead and spectating.</summary>
+        public void SetGhost(bool isGhost)
+        {
+            if (_isGhost == isGhost) return;
+            _isGhost = isGhost;
+            ApplyTint();
+        }
+
+        private void ApplyTint()
+        {
+            if (_sprite != null) _sprite.color = _isGhost ? GhostTint : _baseColor;
         }
 
         public void ApplyState(PlayerStatePacket packet)
@@ -122,16 +215,85 @@ namespace GungeonTogether.Networking.Players
             if (_sprite == null) TryCreateSprite();
             if (_snapshots.Count == 0) return;
 
+            AdvanceClock();
             Snapshot shown = Sample(Time.realtimeSinceStartup - _clockOffset - InterpolationDelay, out Vector2 position);
+            position = SnapToPixel(position);
             transform.position = new Vector3(position.x, position.y, 0f);
             transform.rotation = Quaternion.Euler(0f, 0f, shown.Rotation);
+            if (EnemyTarget != null) EnemyTarget.SyncPosition();
             _flipX = shown.FlipX;
             _spriteId = shown.SpriteId; // the frame from the same moment, so animation matches movement
+            // Same moment as the flip it belongs to; the prefab's fixed offset made the avatar jump
+            // sideways whenever the sender turned to aim the other way. Facing right the offset is
+            // exactly zero, so it must be applied as-is (skipping zero left the sprite shifted).
+            if (_spriteTransform != null)
+            {
+                _spriteTransform.localPosition = new Vector3(shown.SpriteOffset.x, shown.SpriteOffset.y, _spriteTransform.localPosition.z);
+            }
             ApplyFrame();
 
             // ETG draws by z = y - HeightOffGround (tilted world). Left at z = 0 the sprite sits far
             // off the level's depth range and is never drawn, so re-derive it after every move.
             if (_sprite != null) _sprite.UpdateZDepth();
+            UpdateGun(shown, position);
+        }
+
+        private static Vector2 SnapToPixel(Vector2 p) =>
+            new Vector2(Mathf.Round(p.x * PixelsPerUnit) / PixelsPerUnit, Mathf.Round(p.y * PixelsPerUnit) / PixelsPerUnit);
+
+        // ---- Held gun ----
+
+        private void UpdateGun(Snapshot shown, Vector2 position)
+        {
+            if (shown.GunId != _gunId)
+            {
+                _gunId = shown.GunId;
+                DestroyGun();
+                TryCreateGun();
+            }
+            if (_gunSprite == null) return;
+
+            Renderer gunRenderer = _gunSprite.GetComponent<Renderer>();
+            if (gunRenderer != null) gunRenderer.enabled = shown.GunVisible;
+            if (!shown.GunVisible) return;
+
+            _gunSprite.transform.position = new Vector3(position.x + shown.GunOffset.x, position.y + shown.GunOffset.y, 0f);
+            _gunSprite.transform.rotation = Quaternion.Euler(0f, 0f, shown.GunAngle);
+            _gunSprite.FlipY = shown.GunFlipY;
+            _gunSprite.HeightOffGround = shown.GunHeight;
+
+            // Bounds-checked like the body's frame: a gun can switch to another collection.
+            tk2dSpriteCollectionData collection = _gunSprite.Collection;
+            if (shown.GunSpriteId >= 0 && collection != null && collection.spriteDefinitions != null
+                && shown.GunSpriteId < collection.spriteDefinitions.Length && shown.GunSpriteId != _gunSprite.spriteId)
+            {
+                _gunSprite.SetSprite(shown.GunSpriteId);
+            }
+            _gunSprite.UpdateZDepth();
+        }
+
+        private void TryCreateGun()
+        {
+            if (_gunId < 0) return;
+            Gun prefab = PickupObjectDatabase.GetById(_gunId) as Gun;
+            tk2dBaseSprite source = prefab != null ? prefab.GetComponent<tk2dBaseSprite>() : null;
+            if (source == null) return;
+
+            GameObject gunObject = new GameObject("Gun");
+            int playerLayer = LayerMask.NameToLayer("FG_Reflection"); // see TryCreateSprite
+            gunObject.layer = playerLayer >= 0 ? playerLayer : source.gameObject.layer;
+            gunObject.transform.parent = transform;
+
+            _gunSprite = gunObject.AddComponent<tk2dSprite>();
+            _gunSprite.SetSprite(source.Collection, source.spriteId);
+            _gunSprite.scale = source.scale;
+            _gunSprite.IsPerpendicular = source.IsPerpendicular;
+        }
+
+        private void DestroyGun()
+        {
+            if (_gunSprite != null) Destroy(_gunSprite.gameObject);
+            _gunSprite = null;
         }
 
         /// <summary>
@@ -223,9 +385,10 @@ namespace GungeonTogether.Networking.Players
             _sprite.HeightOffGround = source.HeightOffGround;
             _sprite.SortingOrder = source.SortingOrder;
             _sprite.scale = source.scale;
-            _sprite.color = source.color;
+            _baseColor = source.color;
             _sprite.IsPerpendicular = source.IsPerpendicular;
             _sprite.depthUsesTrimmedBounds = source.depthUsesTrimmedBounds;
+            ApplyTint();
             ApplyFrame();
             _sprite.UpdateZDepth();
 

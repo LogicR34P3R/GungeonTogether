@@ -25,6 +25,9 @@ namespace GungeonTogether.Networking.Entities
 
         public int EnemyId;
 
+        // Got the host's death animation frames (EnemyState.Dying): the death was already shown.
+        public bool SawDying;
+
         private SpeculativeRigidbody _body;
         private bool _hasTarget;
         private Vector2 _target;

@@ -163,6 +163,11 @@ namespace GungeonTogether.Networking.Replication
             if (player == null) return null;
 
             Vector3 pos3 = player.transform.position;
+            Gun gun = player.CurrentGun;
+            tk2dBaseSprite gunSprite = gun != null ? gun.sprite : null;
+            // Hidden while dodge rolling, in cutscenes, as a ghost...: the game toggles the renderer.
+            Renderer gunRenderer = gunSprite != null ? gunSprite.GetComponent<Renderer>() : null;
+
             return new PlayerPositionPacket
             {
                 PlayerId = playerId,
@@ -175,8 +180,40 @@ namespace GungeonTogether.Networking.Replication
                 // The frame actually on screen, so the remote avatar mirrors every animation as-is.
                 SpriteId = player.sprite != null ? player.sprite.spriteId : -1,
                 FlipX = player.sprite != null && player.sprite.FlipX,
-                SendTime = Time.realtimeSinceStartup
+                SpriteOffset = player.sprite != null ? (Vector2)(player.sprite.transform.position - pos3) : Vector2.zero,
+                SendTime = Time.realtimeSinceStartup,
+                GunId = gunSprite != null ? gun.PickupObjectId : -1,
+                GunSpriteId = gunSprite != null ? gunSprite.spriteId : -1,
+                GunOffset = gunSprite != null ? (Vector2)(gunSprite.transform.position - pos3) : Vector2.zero,
+                GunAngle = gunSprite != null ? gunSprite.transform.eulerAngles.z : 0f,
+                GunFlipY = gunSprite != null && gunSprite.FlipY,
+                GunHeight = gunSprite != null ? gunSprite.HeightOffGround : 0f,
+                GunVisible = gunRenderer != null && gunRenderer.enabled && !player.IsGhost,
+                SceneHash = LocalSceneHash()
             };
+        }
+
+        private string _hashedScene;
+        private int _sceneHash;
+
+        /// <summary>
+        /// FNV-1a of the current level's scene name, cached per scene. Hand-rolled rather than
+        /// string.GetHashCode, which no runtime promises to keep stable between machines.
+        /// </summary>
+        private int LocalSceneHash()
+        {
+            string scene = WorldStateReplicator.CurrentSceneName();
+            if (scene == _hashedScene) return _sceneHash;
+
+            uint hash = 2166136261;
+            foreach (char c in scene)
+            {
+                hash ^= c;
+                hash *= 16777619;
+            }
+            _hashedScene = scene;
+            _sceneHash = (int)hash;
+            return _sceneHash;
         }
 
         public void SpawnRemotePlayer(ulong steamId, Vector2 position, float rotation)
@@ -184,23 +221,132 @@ namespace GungeonTogether.Networking.Replication
             if (TryGetLiveAvatar(steamId, out _)) return;
 
             RemotePlayerAvatar player = RemotePlayerAvatar.Create(steamId, position, rotation);
+            // Something enemies can aim at for this player: the host's real enemies target it, and a
+            // client's puppets point their replayed bullet scripts at it (see RemotePlayerTarget).
+            player.EnableEnemyTarget(steamId);
             _remotePlayers[steamId] = player;
             Debug.LogInfo($"[PlayerReplicator] Spawned remote player {steamId} at {position}");
         }
 
         private static bool IsLocalLoading() => GameManager.HasInstance && GameManager.Instance.IsLoadingLevel;
 
+        /// <summary>The stand-in target on a remote player's avatar, if it exists.</summary>
+        public bool TryGetEnemyTarget(ulong steamId, out RemotePlayerTarget target)
+        {
+            target = TryGetLiveAvatar(steamId, out var avatar) ? avatar.EnemyTarget : null;
+            return target != null;
+        }
+
+        /// <summary>Host: the stand-ins its enemies may target - one per living remote player on this level.</summary>
+        public IEnumerable<RemotePlayerTarget> LivingEnemyTargets()
+        {
+            foreach (var kvp in _remotePlayers)
+            {
+                if (kvp.Value == null || kvp.Value.EnemyTarget == null) continue;
+                if (!PlayerLifeReplicator.Instance.IsAlive(kvp.Key)) continue;
+                yield return kvp.Value.EnemyTarget;
+            }
+        }
+
         public void UpdateRemotePlayer(PlayerPositionPacket packet)
         {
             if (IsLocalLoading()) return; // see Update: no avatars while loading
             ulong steamId = packet.PlayerId;
+
+            // On another level (e.g. they went back to the Breach): no avatar here. Its position
+            // would be meaningless, and it would keep co-op doors shut for good.
+            if (packet.SceneHash != LocalSceneHash())
+            {
+                if (_remotePlayers.ContainsKey(steamId)) RemoveRemotePlayer(steamId);
+                return;
+            }
+
             if (!TryGetLiveAvatar(steamId, out var player))
             {
                 SpawnRemotePlayer(steamId, packet.Position, packet.Rotation);
                 if (!TryGetLiveAvatar(steamId, out player)) return;
             }
 
-            player.Apply(packet.Position, packet.Rotation, packet.FlipX, packet.CharacterId, packet.SpriteId, packet.SendTime);
+            player.Apply(packet);
+            // Every packet, since a level load rebuilds the avatar; a no-op when unchanged.
+            player.SetGhost(!PlayerLifeReplicator.Instance.IsAlive(steamId));
+        }
+
+        /// <summary>PlayerLifeReplicator: tint a ghost's avatar.</summary>
+        public void SetRemoteGhost(ulong steamId, bool isGhost)
+        {
+            if (TryGetLiveAvatar(steamId, out var player)) player.SetGhost(isGhost);
+        }
+
+        // ---- Doors ----
+
+        // How close a partner must be for a door to open. Vanilla co-op wants every player touching
+        // it; a partner's avatar lags a little behind them, so allow a few units.
+        private const float DoorPartnerRange = 3f;
+        private const float DoorHintInterval = 3f;
+        private float _nextDoorHintTime;
+
+        /// <summary>
+        /// DungeonDoorController.CheckForPlayerCollision prefix. Like vanilla co-op, the local player
+        /// can open a door only while every living partner is next to them, so nobody walks into a
+        /// fight alone - or gets warped into one. False keeps the door shut.
+        /// </summary>
+        public static bool CanOpenDoor(DungeonDoorController door, SpeculativeRigidbody toucher)
+        {
+            try
+            {
+                return Instance.CheckDoor(door, toucher);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarningThrottled("PlayerReplicator.DoorCheck", $"[PlayerReplicator] Door check failed, letting it open: {e.GetType().Name}: {e.Message}");
+                return true;
+            }
+        }
+
+        private bool CheckDoor(DungeonDoorController door, SpeculativeRigidbody toucher)
+        {
+            if (!NetworkSession.Instance.IsConnected || door == null || toucher == null) return true;
+            // The original ignores touches on these; don't show the hint for them either.
+            if (door.IsOpen || door.IsSealed || door.isLocked) return true;
+
+            GameManager gm = GameManager.Instance;
+            if (gm == null || gm.IsFoyer || gm.IsLoadingLevel) return true;
+            PlayerController local = gm.PrimaryPlayer;
+            if (local == null || toucher.gameObject != local.gameObject) return true;
+
+            Vector2 localPos = local.transform.position;
+            // Ghosts too: whoever is spectating comes along, so the fight (and a ghost host, whose
+            // room entry wakes the enemies) never splits up.
+            if (AllPartners(pos => Vector2.Distance(pos, localPos) <= DoorPartnerRange, includeGhosts: true)) return true;
+
+            ShowWaitingHint(local);
+            return false;
+        }
+
+        /// <summary>
+        /// Whether every remote player's latest position (transform origin, like
+        /// PlayerController.transform.position) passes the test; ghosts count only with includeGhosts.
+        /// A partner with no avatar - still loading in, or on another level - doesn't block: better
+        /// than a door or exit that never opens because an avatar went missing.
+        /// </summary>
+        public bool AllPartners(System.Predicate<Vector2> test, bool includeGhosts)
+        {
+            foreach (var kvp in _remotePlayers)
+            {
+                if (kvp.Value == null || (!includeGhosts && !PlayerLifeReplicator.Instance.IsAlive(kvp.Key))) continue;
+                if (!test(kvp.Value.NetworkPosition)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>"Waiting for my partner..." over the local player, at most every few seconds.</summary>
+        public void ShowWaitingHint(PlayerController local)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now < _nextDoorHintTime || local.sprite == null) return;
+            _nextDoorHintTime = now + DoorHintInterval;
+            TextBoxManager.ShowThoughtBubble(local.sprite.WorldTopCenter + new Vector2(0f, 0.5f), local.transform, 1.5f, "Waiting for my partner...");
         }
 
         /// <summary>Latest known position of a remote player, if their avatar exists.</summary>

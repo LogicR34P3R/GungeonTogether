@@ -45,7 +45,16 @@ namespace GungeonTogether.Networking.Session
         // 13: EnemySpawn.IsBoss, EnemyState.MaxHealth, added FloorCleared (puppet bosses).
         // 14: added BossScriptStart/BossScriptStop (boss attack script replay).
         // 15: Heartbeat carries a timestamp and is echoed (ping measurement).
-        public const int ProtocolVersion = 19;
+        // 20: added PlayerLife (co-op ghosts); PlayerPosition carries the held gun.
+        // 21: PlayerPosition carries the sender's level (SceneHash).
+        // 22: enemies synced from every player's room (EnemySpawn.RoomName, EnemyDeath.Killed), added
+        //     RoomObject (tables/breakables), PlayerPosition.SpriteOffset.
+        // 23: added GenerationDecisions (floors generated from the host's save answers).
+        // 24: EnemyState carries the enemy's animation/aim/dying; RoomObject.TableMoved.
+        // 25: RoomObject.TableMoved became ObjectMoved + MovableKind (tables, kickables, minecarts).
+        // 26: RoomObject.Serial/Clip, CartSpawned (host-only minecart factories).
+        // 27: EnemyState.TargetId; script replay (BossScriptStart) now for every enemy, not just bosses.
+        public const int ProtocolVersion = 27;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -203,6 +212,8 @@ namespace GungeonTogether.Networking.Session
             DamageReplicator.Instance.ResetSessionState();
             ScriptReplicator.Instance.ResetSessionState();
             PlayerShotReplicator.Instance.ResetSessionState();
+            PlayerLifeReplicator.Instance.ResetSessionState();
+            GenerationReplicator.Instance.ResetSessionState();
         }
 
         /// <summary>
@@ -270,6 +281,16 @@ namespace GungeonTogether.Networking.Session
             {
                 // A client's only peer is the host - losing it means the session is over.
                 EndClientSession($"lost connection to host {peerId}");
+            }
+        }
+
+        /// <summary>Every fully connected peer: each client for the host, the host for a client.</summary>
+        public IEnumerable<ulong> ConnectedPeerIds
+        {
+            get
+            {
+                foreach (var peer in _peers.Values)
+                    if (peer.State == ConnectionState.Connected) yield return peer.PeerId;
             }
         }
 
@@ -435,6 +456,31 @@ namespace GungeonTogether.Networking.Session
                     }
                     break;
 
+                case PacketType.PlayerLife:
+                    var life = (PlayerLifePacket)packet;
+                    if (IsHost)
+                    {
+                        // Same stamping as shots: never trust the id inside the packet.
+                        if (!_peers.TryGetValue(senderId, out var lifePeer)) break;
+                        life.PlayerId = lifePeer.PlayerId;
+                        PlayerLifeReplicator.Instance.HandleRemoteLife(life);
+                        Broadcast(life, senderId, reliable: true);
+                    }
+                    else if (life.PlayerId != _transport.LocalId)
+                    {
+                        PlayerLifeReplicator.Instance.HandleRemoteLife(life);
+                    }
+                    break;
+
+                // Both directions: the host also relays a client's to other clients.
+                case PacketType.GenerationDecisions:
+                    if (IsClient) GenerationReplicator.Instance.HandleDecisions((GenerationDecisionsPacket)packet);
+                    break;
+
+                case PacketType.RoomObject:
+                    RoomObjectReplicator.Instance.HandleRoomObject(senderId, (RoomObjectPacket)packet);
+                    break;
+
                 // Both directions: the host also relays a client's loot to other clients.
                 case PacketType.LootSpawn:
                     LootReplicator.Instance.HandleLootSpawn(senderId, (LootSpawnPacket)packet);
@@ -570,6 +616,9 @@ namespace GungeonTogether.Networking.Session
 
             // Seed first: the world state may send a mid-run joiner straight to the host's floor,
             // and that floor must generate from the host's seed.
+            // Generation answers before the seed: applying the seed generates the run blueprint,
+            // which replays the host's answers (GenerationReplicator).
+            GenerationReplicator.Instance.SendCurrentDecisionsTo(transportId);
             DungeonSeedReplicator.Instance.SendCurrentSeedTo(transportId);
             WorldStateReplicator.Instance.SendCurrentStateTo(transportId);
             EnemyReplicator.Instance.SendCurrentRoomStateTo(transportId);

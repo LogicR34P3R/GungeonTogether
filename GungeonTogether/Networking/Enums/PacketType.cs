@@ -38,5 +38,8 @@ namespace GungeonTogether.Networking.Enums
         BossScriptStop = 33,
         ClientEnteredRoom = 34,
         PlayerProjectile = 35,
+        PlayerLife = 36,
+        RoomObject = 37,
+        GenerationDecisions = 38,
     }
 }

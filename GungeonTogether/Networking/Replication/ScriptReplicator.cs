@@ -12,10 +12,11 @@ using Object = UnityEngine.Object;
 namespace GungeonTogether.Networking.Replication
 {
     /// <summary>
-    /// Boss attack script replay (step 4c-2, option B). Instead of 4a's straight bullets, the client
-    /// runs a boss's actual BulletScript from its puppet, so spirals, curves, homing and splits
-    /// look right. Scripts aim with BulletManager.PlayerPosition(), which on the client's puppet is
-    /// the client's own player - intended.
+    /// Enemy attack script replay (step 4c-2, option B; first bosses only, now every synced enemy).
+    /// Instead of 4a's straight bullets, the client runs the enemy's actual BulletScript from its
+    /// puppet, so spirals, curves, homing, splits and bullets that wait before flying look right.
+    /// Scripts aim with BulletManager.PlayerPosition() - the puppet's target, which EnemyReplicator
+    /// sets to whoever the host's enemy is targeting (EnemyState.TargetId).
     ///
     /// Determinism: scripts draw from UnityEngine.Random. Each script bullet here gets its own random
     /// stream, swapped into UnityEngine.Random around that bullet's Initialize/FrameUpdate (a stack,
@@ -26,9 +27,9 @@ namespace GungeonTogether.Networking.Replication
     /// Script ticks are frame-count based (Bullet.FrameUpdate steps in 1/60s), so timing matches too,
     /// shifted by network delay.
     ///
-    /// Bosses only (4a's straight bullets still cover everything else, and bullets from replayed
-    /// scripts are excluded from 4a). Switchable off via the host's [Sync] BossScriptReplay config, in
-    /// which case boss bullets fall back to 4a.
+    /// 4a's straight bullets still cover shots that aren't scripts (held guns, direct bank shots), and
+    /// bullets from replayed scripts are excluded from 4a. Switchable off via the host's [Sync]
+    /// BossScriptReplay config (name kept for existing configs), in which case everything falls back to 4a.
     ///
     /// Harmony wiring: GungeonTogether.Patches.ScriptPatches.
     /// </summary>
@@ -89,16 +90,19 @@ namespace GungeonTogether.Networking.Replication
             if (!NetworkSession.Instance.IsHost || !Enabled || source == null || source.BulletScript == null) return;
 
             AIBulletBank bank = source.BulletManager != null ? source.BulletManager : source.bulletBank;
-            AIActor boss = bank != null ? bank.aiActor : null;
-            if (boss == null || boss.healthHaver == null || !boss.healthHaver.IsBoss) return;
-            if (!NetworkEntityManager.Instance.TryGetId(boss, out int enemyId)) return;
+            // Any synced enemy, not just bosses: regular enemies' scripts (book casters, chain bullets...)
+            // spawn bullets that stand still in a pattern and only later get their speed, which the
+            // straight-line copies (4a) never saw - they hung in the air on the client.
+            AIActor enemy = bank != null ? bank.aiActor : null;
+            if (enemy == null) return;
+            if (!NetworkEntityManager.Instance.TryGetId(enemy, out int enemyId)) return;
 
             int seed = _seedSource.Next(1, int.MaxValue);
             int scriptId = _nextScriptId++;
             _pendingRootStream = NewStream(seed);
             _hostSources[source] = scriptId;
 
-            Vector3 offset = source.transform.position - boss.transform.position;
+            Vector3 offset = source.transform.position - enemy.transform.position;
             NetworkSession.Instance.Broadcast(new BossScriptStartPacket
             {
                 EnemyId = enemyId,
@@ -108,7 +112,7 @@ namespace GungeonTogether.Networking.Replication
                 Rotation = source.transform.eulerAngles.z,
                 Seed = seed
             }, reliable: true);
-            Debug.Log($"[ScriptReplicator] Boss {enemyId} started {source.BulletScript.scriptTypeName} (script {scriptId}, seed {seed}).");
+            Debug.Log($"[ScriptReplicator] Enemy {enemyId} started {source.BulletScript.scriptTypeName} (script {scriptId}, seed {seed}).");
         }
 
         /// <summary>BulletScriptSource.Initialize finalizer: the pending stream is only for this call.</summary>
@@ -228,7 +232,7 @@ namespace GungeonTogether.Networking.Replication
             catch (System.Exception e)
             {
                 Debug.LogWarningThrottled($"Script.StartFailed:{packet.ScriptTypeName}",
-                    $"[ScriptReplicator] Couldn't replay {packet.ScriptTypeName} on boss {packet.EnemyId}: {e.Message}");
+                    $"[ScriptReplicator] Couldn't replay {packet.ScriptTypeName} on enemy {packet.EnemyId}: {e.Message}");
                 Object.Destroy(sourceObject);
                 return;
             }
@@ -238,7 +242,7 @@ namespace GungeonTogether.Networking.Replication
             }
 
             _clientSources[packet.ScriptId] = source;
-            Debug.Log($"[ScriptReplicator] Replaying {packet.ScriptTypeName} on boss {packet.EnemyId} (script {packet.ScriptId}).");
+            Debug.Log($"[ScriptReplicator] Replaying {packet.ScriptTypeName} on enemy {packet.EnemyId} (script {packet.ScriptId}).");
         }
 
         public void HandleStop(BossScriptStopPacket packet)

@@ -15,6 +15,7 @@ namespace GungeonTogether.Networking.Packets
         public float Rotation;
         public int Health;
         public bool IsBoss; // the client adopts its own native copy of the boss rather than spawning one
+        public string RoomName; // the host room it's in: enemies are synced from every room a player is in
 
         public void Serialize(BinaryWriter writer)
         {
@@ -25,6 +26,7 @@ namespace GungeonTogether.Networking.Packets
             writer.Write(Rotation);
             writer.Write(Health);
             writer.Write(IsBoss);
+            writer.Write(RoomName ?? string.Empty);
         }
 
         public void Deserialize(BinaryReader reader)
@@ -35,6 +37,7 @@ namespace GungeonTogether.Networking.Packets
             Rotation = reader.ReadSingle();
             Health = reader.ReadInt32();
             IsBoss = reader.ReadBoolean();
+            RoomName = reader.ReadString();
         }
     }
 }

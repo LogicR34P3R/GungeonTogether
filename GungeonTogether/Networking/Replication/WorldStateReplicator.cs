@@ -58,11 +58,85 @@ namespace GungeonTogether.Networking.Replication
 
         private void Update()
         {
-            if (!NetworkSession.Instance.IsHost) return;
             if (GameManager.Instance == null) return;
+            UpdateElevatorWait();
 
+            if (!NetworkSession.Instance.IsHost) return;
             DetectHostTransitionStart();
             SyncHostWorldState();
+        }
+
+        /// <summary>
+        /// GameManager.Pause postfix. The pause menu freezes the game by setting its time scale to 0
+        /// - on the host that froze every enemy, so the client ran around unable to hurt anything.
+        /// Online, the game keeps running behind the menu (the paused player just stands still: input
+        /// is blocked while paused). Death's own pause (PauseRaw + its own multiplier) is untouched.
+        /// </summary>
+        public static void OnPaused(GameManager gm)
+        {
+            if (NetworkSession.Instance.IsConnected && gm != null) BraveTime.ClearMultiplier(gm.gameObject);
+        }
+
+        // ---- Leaving a floor together ----
+
+        // The exit elevator the local player stepped into, while it waits for everyone.
+        private ElevatorDepartureController _waitingElevator;
+        private SpeculativeRigidbody _waitingTrigger;
+
+        /// <summary>
+        /// ElevatorDepartureController.OnElevatorTriggerEnter prefix. Vanilla co-op leaves only once
+        /// every living player stands in the elevator, whoever stepped in first; it can only see
+        /// local players, so the waiting moves to UpdateElevatorWait. False skips the original.
+        /// </summary>
+        public static bool OnElevatorEntered(ElevatorDepartureController elevator, SpeculativeRigidbody trigger,
+            SpeculativeRigidbody enterer, Tribool arrived)
+        {
+            if (!NetworkSession.Instance.IsConnected || elevator == null || trigger == null || enterer == null) return true;
+            PlayerController local = GameManager.Instance != null ? GameManager.Instance.PrimaryPlayer : null;
+            if (local == null || enterer.gameObject != local.gameObject) return true;
+            // Not ready to leave yet (still arriving), or the rare cryo variant: the original decides.
+            if (arrived != Tribool.Ready) return true;
+
+            Instance._waitingElevator = elevator;
+            Instance._waitingTrigger = trigger;
+            return false;
+        }
+
+        /// <summary>
+        /// While the local player waits in an exit elevator: once every living partner's avatar is
+        /// in it too, the host leaves (the client follows as for any host level change). The client
+        /// never leaves on its own - the host sees the same two players in its elevator and goes.
+        /// </summary>
+        private void UpdateElevatorWait()
+        {
+            if (_waitingElevator == null) return;
+
+            GameManager gm = GameManager.Instance;
+            PlayerController local = gm.PrimaryPlayer;
+            if (!NetworkSession.Instance.IsConnected || gm.IsLoadingLevel || local == null || _waitingTrigger == null
+                || !_waitingTrigger.ContainsPoint(local.SpriteBottomCenter, int.MaxValue, true))
+            {
+                // Stepped back out (or the session/level ended): nothing to wait for.
+                _waitingElevator = null;
+                _waitingTrigger = null;
+                return;
+            }
+
+            // Avatars carry the partner's transform origin; test their feet like the game does.
+            Vector2 feetOffset = (Vector2)(local.SpriteBottomCenter - local.transform.position);
+            SpeculativeRigidbody trigger = _waitingTrigger;
+            if (!PlayerReplicator.Instance.AllPartners(pos => trigger.ContainsPoint(pos + feetOffset, int.MaxValue, true), includeGhosts: false))
+            {
+                PlayerReplicator.Instance.ShowWaitingHint(local);
+                return;
+            }
+            if (!NetworkSession.Instance.IsHost) return;
+
+            Debug.LogInfo("[WorldStateReplicator] Everyone is in the elevator; leaving the floor.");
+            ElevatorDepartureController elevator = _waitingElevator;
+            _waitingElevator = null;
+            _waitingTrigger = null;
+            elevator.DoDeparture();
         }
 
         // ---- Host ----
@@ -168,8 +242,14 @@ namespace GungeonTogether.Networking.Replication
         public void HandleLevelTransition(LevelTransitionPacket packet)
         {
             if (string.IsNullOrEmpty(packet.SceneName)) return;
+            // The host has only just started loading: any answers we hold for this scene are stale.
+            GenerationReplicator.Instance.DiscardFloorFor(packet.SceneName);
             RequestFollow(packet.SceneName);
         }
+
+        // How long a following client waits for the host's generation answers before generating
+        // from its own save anyway. The host sends them once its layout is done - normally a second or two.
+        private const float GenerationAnswersTimeout = 20f;
 
         private void RequestFollow(string sceneName)
         {
@@ -188,10 +268,33 @@ namespace GungeonTogether.Networking.Replication
                 yield return new WaitForSeconds(PollInterval);
 
             string target = _followTarget;
+            if (string.IsNullOrEmpty(target) || CurrentSceneName() == target)
+            {
+                _followTarget = null;
+                _followQueued = false;
+                yield break; // already there
+            }
+
+            // Generate the floor from the host's save answers (GenerationReplicator), not our own.
+            float waitUntil = Time.realtimeSinceStartup + GenerationAnswersTimeout;
+            while (!GenerationReplicator.Instance.HasFloorDecisionsFor(target) && Time.realtimeSinceStartup < waitUntil
+                   && NetworkSession.Instance.IsClient && _followTarget == target)
+            {
+                yield return new WaitForSeconds(PollInterval);
+            }
+            if (_followTarget != target) // a newer target arrived meanwhile; start over for it
+            {
+                StartCoroutine(FollowWhenReady());
+                yield break;
+            }
+            if (!GenerationReplicator.Instance.HasFloorDecisionsFor(target))
+            {
+                Debug.LogWarning($"[WorldStateReplicator] No generation answers from the host for {target} after {GenerationAnswersTimeout:0}s; following anyway.");
+            }
+
             _followTarget = null;
             _followQueued = false;
-
-            if (string.IsNullOrEmpty(target) || CurrentSceneName() == target) yield break; // already there
+            if (!NetworkSession.Instance.IsClient) yield break;
             BeginFollow(target);
         }
 

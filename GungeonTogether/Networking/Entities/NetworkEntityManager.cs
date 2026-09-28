@@ -34,7 +34,13 @@ namespace GungeonTogether.Networking.Entities
         // go can already be Unity-destroyed here (e.g. the client killed its local copy first).
         public void RemoveRemote(int id) { if (_remoteEntities.TryGetValue(id, out var go) && go != null) Object.Destroy(go); _remoteEntities.Remove(id); }
 
-        /// <summary>Resets the registry - call on both host and client when the room changes, so ids don't outlive the room they were assigned in.</summary>
+        /// <summary>Client side: stop tracking a remote object without destroying it (it plays its death first).</summary>
+        public void ForgetRemote(int id) => _remoteEntities.Remove(id);
+
+        /// <summary>
+        /// Resets the registry - on both sides at every level load and session end. Ids live for the
+        /// whole level: enemies are synced from several rooms at once, so a room change can't reset them.
+        /// </summary>
         public void Clear()
         {
             foreach (var kv in _remoteEntities) if (kv.Value != null) Object.Destroy(kv.Value);

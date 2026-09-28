@@ -45,6 +45,9 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.BossScriptStop, typeof(BossScriptStopPacket) },
             { PacketType.ClientEnteredRoom, typeof(ClientEnteredRoomPacket) },
             { PacketType.PlayerProjectile, typeof(PlayerProjectilePacket) },
+            { PacketType.PlayerLife, typeof(PlayerLifePacket) },
+            { PacketType.RoomObject, typeof(RoomObjectPacket) },
+            { PacketType.GenerationDecisions, typeof(GenerationDecisionsPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)
