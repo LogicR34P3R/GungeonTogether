@@ -48,6 +48,7 @@ namespace GungeonTogether.Networking.Players
             public bool FlipX;
             public Vector2 SpriteOffset;
             public int SpriteId;
+            public int SpriteCollection; // which sheet SpriteId is in (CollectionHash)
             public int GunId;
             public int GunSpriteId;
             public Vector2 GunOffset;
@@ -70,7 +71,7 @@ namespace GungeonTogether.Networking.Players
         private bool _isGhost;
         private Vector3 _targetPosition;
         private int _characterId = UnknownCharacter;
-        private bool _altCostume;
+        private int _collectionHash;
         private int _spriteId = -1;
         private bool _flipX;
 
@@ -130,6 +131,7 @@ namespace GungeonTogether.Networking.Players
                 FlipX = packet.FlipX,
                 SpriteOffset = packet.SpriteOffset,
                 SpriteId = packet.SpriteId,
+                SpriteCollection = packet.SpriteCollection,
                 GunId = packet.GunId,
                 GunSpriteId = packet.GunSpriteId,
                 GunOffset = packet.GunOffset,
@@ -141,11 +143,10 @@ namespace GungeonTogether.Networking.Players
             if (_snapshots.Count > MaxSnapshots) _snapshots.RemoveAt(0);
             _targetPosition = new Vector3(packet.Position.x, packet.Position.y, 0f);
 
-            if (packet.CharacterId != _characterId || packet.AltCostume != _altCostume)
+            if (packet.CharacterId != _characterId)
             {
-                // First packet, or they picked another character or costume in the Breach: rebuild.
+                // First packet, or they picked another character in the Breach: rebuild from that prefab.
                 _characterId = packet.CharacterId;
-                _altCostume = packet.AltCostume;
                 DestroySprite();
             }
             if (_sprite == null) TryCreateSprite();
@@ -225,6 +226,7 @@ namespace GungeonTogether.Networking.Players
             if (EnemyTarget != null) EnemyTarget.SyncPosition();
             _flipX = shown.FlipX;
             _spriteId = shown.SpriteId; // the frame from the same moment, so animation matches movement
+            _collectionHash = shown.SpriteCollection;
             // Same moment as the flip it belongs to; the prefab's fixed offset made the avatar jump
             // sideways whenever the sender turned to aim the other way. Facing right the offset is
             // exactly zero, so it must be applied as-is (skipping zero left the sprite shifted).
@@ -340,15 +342,108 @@ namespace GungeonTogether.Networking.Players
             if (_sprite == null) return;
             _sprite.FlipX = _flipX;
 
-            // Bounds-checked: an alternate costume draws from another collection, whose ids can
-            // exceed the prefab's. Keep the last good frame rather than throwing every packet.
-            tk2dSpriteCollectionData collection = _sprite.Collection;
+            // The sheet the sender's frame is in: a frame number means nothing without it. Unknown
+            // (0, or a sheet this character's animations don't use) keeps the current sheet.
+            tk2dSpriteCollectionData collection = FindCollection(_characterId, _collectionHash);
+            if (collection == null)
+            {
+                if (_collectionHash != 0)
+                {
+                    Debug.LogWarningThrottled($"RemotePlayer.UnknownSheet:{_characterId}:{_collectionHash}",
+                        $"[RemotePlayer] {name}: sprite sheet {_collectionHash} isn't one of this character's; keeping the current sheet.");
+                }
+                collection = _sprite.Collection;
+            }
+
+            // Bounds-checked: keep the last good frame rather than throwing every packet.
             if (_spriteId < 0 || collection == null || collection.spriteDefinitions == null
-                || _spriteId >= collection.spriteDefinitions.Length || _spriteId == _sprite.spriteId)
+                || _spriteId >= collection.spriteDefinitions.Length)
             {
                 return;
             }
-            _sprite.SetSprite(_spriteId);
+            if (collection != _sprite.Collection) _sprite.SetSprite(collection, _spriteId);
+            else if (_spriteId != _sprite.spriteId) _sprite.SetSprite(_spriteId);
+        }
+
+        /// <summary>
+        /// The key a sprite sheet is sent by: a hash of its name, so the same sheet matches on both
+        /// sides. Name-based rather than string.GetHashCode, which no runtime keeps stable across machines.
+        /// </summary>
+        public static int CollectionHash(tk2dSpriteCollectionData collection)
+        {
+            if (collection == null) return 0;
+            string key = !string.IsNullOrEmpty(collection.spriteCollectionName) ? collection.spriteCollectionName : collection.name;
+            return string.IsNullOrEmpty(key) ? 0 : NameHash(key);
+        }
+
+        /// <summary>FNV-1a of a string - stable on every machine.</summary>
+        public static int NameHash(string text)
+        {
+            uint hash = 2166136261;
+            foreach (char c in text)
+            {
+                hash ^= c;
+                hash *= 16777619;
+            }
+            return (int)hash;
+        }
+
+        // Per character: every sprite sheet its animations use - both costumes - by CollectionHash.
+        private static readonly Dictionary<int, Dictionary<int, tk2dSpriteCollectionData>> _sheets =
+            new Dictionary<int, Dictionary<int, tk2dSpriteCollectionData>>();
+
+        private static tk2dSpriteCollectionData FindCollection(int characterId, int hash)
+        {
+            if (hash == 0 || characterId == UnknownCharacter) return null;
+            if (!_sheets.TryGetValue(characterId, out Dictionary<int, tk2dSpriteCollectionData> sheets))
+            {
+                tk2dBaseSprite prefabSprite = GetPrefabSprite(characterId);
+                if (prefabSprite == null) return null;
+                sheets = new Dictionary<int, tk2dSpriteCollectionData>();
+                AddSheet(sheets, prefabSprite.Collection);
+                tk2dSpriteAnimator animator = prefabSprite.GetComponent<tk2dSpriteAnimator>();
+                if (animator == null) animator = prefabSprite.transform.root.GetComponentInChildren<tk2dSpriteAnimator>(true);
+                AddSheets(sheets, animator != null ? animator.Library : null);
+                PlayerController prefab = prefabSprite.transform.root.GetComponent<PlayerController>();
+                AddSheets(sheets, prefab != null ? prefab.AlternateCostumeLibrary : null);
+                _sheets[characterId] = sheets;
+                Debug.LogInfo($"[RemotePlayer] {(PlayableCharacters)characterId} animates from {sheets.Count} sprite sheet(s).");
+            }
+            if (sheets.TryGetValue(hash, out tk2dSpriteCollectionData collection)) return collection;
+
+            // Not one of the character's own: an item can swap in override animations. Search every
+            // loaded sheet once for it; a miss is remembered (null) so it's never searched again.
+            collection = null;
+            foreach (Object o in Resources.FindObjectsOfTypeAll(typeof(tk2dSpriteCollectionData)))
+            {
+                tk2dSpriteCollectionData candidate = o as tk2dSpriteCollectionData;
+                if (candidate != null && CollectionHash(candidate) == hash)
+                {
+                    collection = candidate;
+                    break;
+                }
+            }
+            sheets[hash] = collection;
+            return collection;
+        }
+
+        private static void AddSheets(Dictionary<int, tk2dSpriteCollectionData> sheets, tk2dSpriteAnimation library)
+        {
+            if (library == null || library.clips == null) return;
+            foreach (tk2dSpriteAnimationClip clip in library.clips)
+            {
+                if (clip == null || clip.frames == null) continue;
+                foreach (tk2dSpriteAnimationFrame frame in clip.frames)
+                {
+                    if (frame != null) AddSheet(sheets, frame.spriteCollection);
+                }
+            }
+        }
+
+        private static void AddSheet(Dictionary<int, tk2dSpriteCollectionData> sheets, tk2dSpriteCollectionData collection)
+        {
+            int hash = CollectionHash(collection);
+            if (hash != 0 && !sheets.ContainsKey(hash)) sheets[hash] = collection;
         }
 
         /// <summary>
@@ -383,9 +478,7 @@ namespace GungeonTogether.Networking.Players
             _spriteTransform = spriteObject.transform;
 
             _sprite = spriteObject.AddComponent<tk2dSprite>();
-            tk2dSpriteCollectionData costume = _altCostume ? GetAltCostumeCollection(source) : null;
-            if (costume != null) _sprite.SetSprite(costume, 0);
-            else _sprite.SetSprite(source.Collection, source.spriteId);
+            _sprite.SetSprite(source.Collection, source.spriteId); // ApplyFrame switches to the sender's sheet
             _sprite.HeightOffGround = source.HeightOffGround;
             _sprite.SortingOrder = source.SortingOrder;
             _sprite.scale = source.scale;
@@ -397,7 +490,6 @@ namespace GungeonTogether.Networking.Players
             _sprite.UpdateZDepth();
 
             Debug.LogInfo($"[RemotePlayer] {name} sprite created: character={(_characterId == UnknownCharacter ? "unknown (local copy)" : ((PlayableCharacters)_characterId).ToString())}, " +
-                          $"costume={(_altCostume ? (costume != null ? "alternate" : "alternate (not found, base used)") : "base")}, " +
                           $"layer={LayerMask.LayerToName(spriteObject.layer)}, pos={_spriteTransform.position}");
         }
 
@@ -406,25 +498,6 @@ namespace GungeonTogether.Networking.Players
             if (_spriteTransform != null) Destroy(_spriteTransform.gameObject);
             _sprite = null;
             _spriteTransform = null;
-        }
-
-        /// <summary>
-        /// The collection of the character's Wardrobe costume: the one its AlternateCostumeLibrary's
-        /// clips draw from (as PlayerController.SwapToAlternateCostume finds it for the hands).
-        /// </summary>
-        private static tk2dSpriteCollectionData GetAltCostumeCollection(tk2dBaseSprite prefabSprite)
-        {
-            PlayerController prefab = prefabSprite.transform.root.GetComponent<PlayerController>();
-            tk2dSpriteAnimation library = prefab != null ? prefab.AlternateCostumeLibrary : null;
-            if (library == null || library.clips == null) return null;
-            foreach (tk2dSpriteAnimationClip clip in library.clips)
-            {
-                if (clip != null && clip.frames != null && clip.frames.Length > 0 && clip.frames[0].spriteCollection != null)
-                {
-                    return clip.frames[0].spriteCollection;
-                }
-            }
-            return null;
         }
 
         /// <summary>The sprite on a character's prefab, found the way PlayerController.Awake finds it.</summary>

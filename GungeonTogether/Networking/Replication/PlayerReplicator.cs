@@ -177,7 +177,7 @@ namespace GungeonTogether.Networking.Replication
                 IsGrounded = true,
                 IsDodgeRolling = player.IsDodgeRolling,
                 CharacterId = (int)player.characterIdentity,
-                AltCostume = player.IsUsingAlternateCostume,
+                SpriteCollection = LocalCollectionHash(player.sprite),
                 // The frame actually on screen, so the remote avatar mirrors every animation as-is.
                 SpriteId = player.sprite != null ? player.sprite.spriteId : -1,
                 FlipX = player.sprite != null && player.sprite.FlipX,
@@ -205,16 +205,25 @@ namespace GungeonTogether.Networking.Replication
         {
             string scene = WorldStateReplicator.CurrentSceneName();
             if (scene == _hashedScene) return _sceneHash;
-
-            uint hash = 2166136261;
-            foreach (char c in scene)
-            {
-                hash ^= c;
-                hash *= 16777619;
-            }
             _hashedScene = scene;
-            _sceneHash = (int)hash;
+            _sceneHash = RemotePlayerAvatar.NameHash(scene);
             return _sceneHash;
+        }
+
+        private tk2dSpriteCollectionData _hashedCollection;
+        private int _collectionHash;
+
+        /// <summary>The sprite sheet the local player's current frame comes from, cached per sheet.</summary>
+        private int LocalCollectionHash(tk2dBaseSprite sprite)
+        {
+            tk2dSpriteCollectionData collection = sprite != null ? sprite.Collection : null;
+            if (collection == null) return 0;
+            if (collection != _hashedCollection)
+            {
+                _hashedCollection = collection;
+                _collectionHash = RemotePlayerAvatar.CollectionHash(collection);
+            }
+            return _collectionHash;
         }
 
         public void SpawnRemotePlayer(ulong steamId, Vector2 position, float rotation)
