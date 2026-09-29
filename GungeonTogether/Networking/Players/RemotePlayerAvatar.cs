@@ -70,6 +70,7 @@ namespace GungeonTogether.Networking.Players
         private bool _isGhost;
         private Vector3 _targetPosition;
         private int _characterId = UnknownCharacter;
+        private bool _altCostume;
         private int _spriteId = -1;
         private bool _flipX;
 
@@ -140,10 +141,11 @@ namespace GungeonTogether.Networking.Players
             if (_snapshots.Count > MaxSnapshots) _snapshots.RemoveAt(0);
             _targetPosition = new Vector3(packet.Position.x, packet.Position.y, 0f);
 
-            if (packet.CharacterId != _characterId)
+            if (packet.CharacterId != _characterId || packet.AltCostume != _altCostume)
             {
-                // First packet, or they picked another character in the Breach: rebuild from that prefab.
+                // First packet, or they picked another character or costume in the Breach: rebuild.
                 _characterId = packet.CharacterId;
+                _altCostume = packet.AltCostume;
                 DestroySprite();
             }
             if (_sprite == null) TryCreateSprite();
@@ -381,7 +383,9 @@ namespace GungeonTogether.Networking.Players
             _spriteTransform = spriteObject.transform;
 
             _sprite = spriteObject.AddComponent<tk2dSprite>();
-            _sprite.SetSprite(source.Collection, source.spriteId);
+            tk2dSpriteCollectionData costume = _altCostume ? GetAltCostumeCollection(source) : null;
+            if (costume != null) _sprite.SetSprite(costume, 0);
+            else _sprite.SetSprite(source.Collection, source.spriteId);
             _sprite.HeightOffGround = source.HeightOffGround;
             _sprite.SortingOrder = source.SortingOrder;
             _sprite.scale = source.scale;
@@ -393,6 +397,7 @@ namespace GungeonTogether.Networking.Players
             _sprite.UpdateZDepth();
 
             Debug.LogInfo($"[RemotePlayer] {name} sprite created: character={(_characterId == UnknownCharacter ? "unknown (local copy)" : ((PlayableCharacters)_characterId).ToString())}, " +
+                          $"costume={(_altCostume ? (costume != null ? "alternate" : "alternate (not found, base used)") : "base")}, " +
                           $"layer={LayerMask.LayerToName(spriteObject.layer)}, pos={_spriteTransform.position}");
         }
 
@@ -401,6 +406,25 @@ namespace GungeonTogether.Networking.Players
             if (_spriteTransform != null) Destroy(_spriteTransform.gameObject);
             _sprite = null;
             _spriteTransform = null;
+        }
+
+        /// <summary>
+        /// The collection of the character's Wardrobe costume: the one its AlternateCostumeLibrary's
+        /// clips draw from (as PlayerController.SwapToAlternateCostume finds it for the hands).
+        /// </summary>
+        private static tk2dSpriteCollectionData GetAltCostumeCollection(tk2dBaseSprite prefabSprite)
+        {
+            PlayerController prefab = prefabSprite.transform.root.GetComponent<PlayerController>();
+            tk2dSpriteAnimation library = prefab != null ? prefab.AlternateCostumeLibrary : null;
+            if (library == null || library.clips == null) return null;
+            foreach (tk2dSpriteAnimationClip clip in library.clips)
+            {
+                if (clip != null && clip.frames != null && clip.frames.Length > 0 && clip.frames[0].spriteCollection != null)
+                {
+                    return clip.frames[0].spriteCollection;
+                }
+            }
+            return null;
         }
 
         /// <summary>The sprite on a character's prefab, found the way PlayerController.Awake finds it.</summary>

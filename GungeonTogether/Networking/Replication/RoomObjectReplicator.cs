@@ -53,6 +53,7 @@ namespace GungeonTogether.Networking.Replication
             public Vector2 Target;
             public float DrivenUntil;
             public bool AlwaysDriven;   // a client's copy of a host factory cart: only ever follows the host
+            public float GoopElapsed;   // a driven barrel's goop trail (LayGoopTrail)
         }
 
         private static tk2dSpriteAnimator AnimatorOf(Component o)
@@ -80,6 +81,7 @@ namespace GungeonTogether.Networking.Replication
             float now = Time.realtimeSinceStartup;
             ScanMovables(now);
             FollowRemote(now);
+            LogStats(now);
 
             if (now < _nextMoveCheck) return;
             _nextMoveCheck = now + MoveCheckInterval;
@@ -87,12 +89,16 @@ namespace GungeonTogether.Networking.Replication
             {
                 if (m.Object == null || m.AlwaysDriven || now < m.DrivenUntil) continue;
                 Vector2 position = m.Object.transform.position;
-                tk2dSpriteAnimator animator = AnimatorOf(m.Object);
-                string clip = animator != null && animator.CurrentClip != null ? animator.CurrentClip.name ?? "" : "";
                 // A change of animation counts too: a barrel that stops rolling doesn't move any more.
+                // Not for tables: their only animations are flipping and breaking, which have events
+                // of their own. Reporting the flip clip made each side "drive" the other's table
+                // right after a flip, pulling it back and swallowing the pushes that followed.
+                tk2dSpriteAnimator animator = m.Kind == MovableKind.Table ? null : AnimatorOf(m.Object);
+                string clip = animator != null && animator.CurrentClip != null ? animator.CurrentClip.name ?? "" : "";
                 if (Vector2.Distance(position, m.LastKnown) < MoveThreshold && clip == m.LastClip) continue;
                 m.LastKnown = position;
                 m.LastClip = clip;
+                _statMovesSent++;
                 Send(new RoomObjectPacket
                 {
                     Event = RoomObjectPacket.ObjectEvent.ObjectMoved,
@@ -103,6 +109,30 @@ namespace GungeonTogether.Networking.Replication
                     Clip = clip
                 });
             }
+        }
+
+        // Diagnostics, at Info every 15s when anything moved: pushed tables still didn't move on the
+        // other side after the rescan fix, and nothing in the logs said which step fails.
+        private const float StatsInterval = 15f;
+        private int _statMovesSent, _statMovesReceived, _statMovesApplied, _statMovesHeld, _statMovesIgnored;
+        private float _nextStatsTime;
+
+        private void LogStats(float now)
+        {
+            if (now < _nextStatsTime) return;
+            _nextStatsTime = now + StatsInterval;
+            if (_statMovesSent + _statMovesReceived == 0) return;
+            int tables = 0, kickables = 0, carts = 0;
+            foreach (Movable m in _movables)
+            {
+                if (m.Object == null) continue;
+                if (m.Kind == MovableKind.Table) tables++;
+                else if (m.Kind == MovableKind.Kickable) kickables++;
+                else carts++;
+            }
+            Debug.LogInfo($"[RoomObjects] Last {StatsInterval:0}s: moves sent={_statMovesSent}, received={_statMovesReceived}, applied={_statMovesApplied}, ignored (moving it here)={_statMovesIgnored}, " +
+                          $"held (object not found)={_statMovesHeld} | tracking {tables} tables, {kickables} kickables, {carts} carts");
+            _statMovesSent = _statMovesReceived = _statMovesApplied = _statMovesHeld = _statMovesIgnored = 0;
         }
 
         /// <summary>Eases remote-driven objects towards their latest position (updates come at 10 Hz).</summary>
@@ -123,7 +153,39 @@ namespace GungeonTogether.Networking.Replication
                     ? m.Target
                     : Vector2.Lerp(current, m.Target, Mathf.Clamp01(Time.deltaTime * FollowRate));
                 SetPosition(m, next);
+                LayGoopTrail(m);
             }
+        }
+
+        /// <summary>
+        /// A rolling oil/water barrel leaves goop (KickableObject.Update), but only while its physics
+        /// velocity is up - which a barrel moved by position never has. Same trail, same rate.
+        /// </summary>
+        private static void LayGoopTrail(Movable m)
+        {
+            KickableObject barrel = m.Object as KickableObject;
+            if (barrel == null || !barrel.leavesGoopTrail || barrel.goopType == null || barrel.sprite == null) return;
+            m.GoopElapsed += Time.deltaTime;
+            if (m.GoopElapsed < barrel.goopFrequency) return;
+            m.GoopElapsed = 0f;
+            DeadlyDeadlyGoopManager goop = DeadlyDeadlyGoopManager.GetGoopManagerForGoopType(barrel.goopType);
+            if (goop != null) goop.AddGoopCircle(barrel.sprite.WorldCenter, barrel.goopRadius + 0.1f);
+        }
+
+        /// <summary>
+        /// MineCartController.UpdateAnimations prefix: false (skip) for a cart the other side is
+        /// driving. It picks the wheel animation from physics velocity, which a cart moved by
+        /// position doesn't have, so it stopped the host's animation every frame: frozen wheels.
+        /// </summary>
+        public static bool AllowCartAnimation(MineCartController cart)
+        {
+            if (!NetworkSession.Instance.IsConnected) return true;
+            float now = Time.realtimeSinceStartup;
+            foreach (Movable m in Instance._movables)
+            {
+                if (m.Object == cart) return !(m.AlwaysDriven || now < m.DrivenUntil);
+            }
+            return true;
         }
 
         private static void SetPosition(Movable m, Vector2 position)
@@ -205,7 +267,7 @@ namespace GungeonTogether.Networking.Replication
                 if (table != null && !table.IsFlipped)
                 {
                     _applying = true;
-                    try { table.Flip((DungeonData.Direction)_pendingFlips[i].FlipDirection); }
+                    try { MirrorFlip(table, (DungeonData.Direction)_pendingFlips[i].FlipDirection); }
                     finally { _applying = false; }
                 }
                 _pendingFlips.RemoveAt(i);
@@ -218,14 +280,35 @@ namespace GungeonTogether.Networking.Replication
             }
         }
 
+        private static readonly MethodInfo RemoveFromRoomHierarchyMethod =
+            typeof(FlippableCover).GetMethod("RemoveFromRoomHierarchy", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        /// <summary>
+        /// A remote player's flip, as the game does a local one. Flip(Direction) skips what the
+        /// player's Flip(SpeculativeRigidbody) does first: take the table out of its room's hierarchy,
+        /// which the game switches off while the room is out of view. Left in it, a flipped table
+        /// pushed out into a hallway vanished here whenever its old room did.
+        /// </summary>
+        private static void MirrorFlip(FlippableCover table, DungeonData.Direction direction)
+        {
+            if (RemoveFromRoomHierarchyMethod != null)
+            {
+                try { RemoveFromRoomHierarchyMethod.Invoke(table, null); }
+                catch (Exception e) { Debug.LogWarningThrottled("RoomObjects.Detach", $"[RoomObjects] Couldn't detach a flipped table from its room: {e.InnerException?.Message ?? e.Message}"); }
+            }
+            table.Flip(direction);
+        }
+
         private void MoveObject(RoomObjectPacket packet)
         {
+            _statMovesReceived++;
             Movable match = null;
-            float best = MatchDistance;
+            float best = MatchDistance, nearest = float.MaxValue;
             foreach (Movable m in _movables)
             {
                 if (m.Object == null || (byte)m.Kind != packet.MovableKind || m.Serial != packet.Serial) continue;
                 float distance = Vector2.Distance(m.Home, packet.Position);
+                nearest = Mathf.Min(nearest, distance);
                 if (distance <= best)
                 {
                     match = m;
@@ -235,10 +318,24 @@ namespace GungeonTogether.Networking.Replication
             if (match == null)
             {
                 // Its room is still switched off here; put it in place once it shows up (ApplyPending).
+                _statMovesHeld++;
+                Debug.LogWarningThrottled($"RoomObjects.Unmatched:{packet.MovableKind}",
+                    $"[RoomObjects] No {(MovableKind)packet.MovableKind} starting at {packet.Position} here (nearest tracked one started " +
+                    $"{(nearest == float.MaxValue ? "- none tracked" : nearest.ToString("0.00") + " units away")}); holding its move.");
                 Hold(_pendingMoves, packet, p => p.MovableKind == packet.MovableKind && p.Serial == packet.Serial && Vector2.Distance(p.Position, packet.Position) <= MatchDistance);
                 return;
             }
 
+            // Moved here since our last report: we're moving it ourselves (pushing it) and haven't
+            // sent that yet. Ours wins; the other side will get our position next poll.
+            if (!match.AlwaysDriven && Time.realtimeSinceStartup >= match.DrivenUntil
+                && Vector2.Distance(match.Object.transform.position, match.LastKnown) >= MoveThreshold)
+            {
+                _statMovesIgnored++;
+                return;
+            }
+
+            _statMovesApplied++;
             match.Target = packet.MovedTo;
             match.DrivenUntil = Time.realtimeSinceStartup + DrivenHoldSeconds;
 
@@ -392,7 +489,7 @@ namespace GungeonTogether.Networking.Replication
                 Hold(_pendingFlips, packet, p => Vector2.Distance(p.Position, packet.Position) <= MatchDistance);
                 return;
             }
-            table.Flip((DungeonData.Direction)packet.FlipDirection);
+            MirrorFlip(table, (DungeonData.Direction)packet.FlipDirection);
         }
 
         private static void BreakMinor(RoomObjectPacket packet)

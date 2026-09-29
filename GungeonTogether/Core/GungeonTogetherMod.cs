@@ -46,6 +46,12 @@ namespace GungeonTogether.Core
                 PlayerShotReplicator.Instance.gameObject.SetActive(true);
                 PlayerLifeReplicator.Instance.gameObject.SetActive(true);
                 RoomObjectReplicator.Instance.gameObject.SetActive(true);
+                // Their Update/LateUpdate must run from the start (beam angles, grab timeout), not
+                // only once a packet first creates them.
+                ExplosionReplicator.Instance.gameObject.SetActive(true);
+                EnemyHitReplicator.Instance.gameObject.SetActive(true);
+                GoopReplicator.Instance.gameObject.SetActive(true);
+                BeamReplicator.Instance.gameObject.SetActive(true);
                 GenerationReplicator.Instance.gameObject.SetActive(true);
                 BindSyncOptions();
 

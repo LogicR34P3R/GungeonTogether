@@ -37,6 +37,10 @@ namespace GungeonTogether.Networking.Packets
         // exists while both are on the same level: otherwise its position means nothing here.
         public int SceneHash;
 
+        // Wardrobe alternate costume: its frames live in another sprite collection, so the same
+        // SpriteId is a different picture there (the avatar flicked through unrelated frames).
+        public bool AltCostume;
+
         public void Serialize(BinaryWriter writer)
         {
             writer.Write(PlayerId);
@@ -62,6 +66,7 @@ namespace GungeonTogether.Networking.Packets
             writer.Write(SceneHash);
             writer.Write(SpriteOffset.x);
             writer.Write(SpriteOffset.y);
+            writer.Write(AltCostume);
         }
 
         public void Deserialize(BinaryReader reader)
@@ -85,6 +90,7 @@ namespace GungeonTogether.Networking.Packets
             GunVisible = reader.ReadBoolean();
             SceneHash = reader.ReadInt32();
             SpriteOffset = new Vector2(reader.ReadSingle(), reader.ReadSingle());
+            AltCostume = reader.ReadBoolean();
         }
     }
 }

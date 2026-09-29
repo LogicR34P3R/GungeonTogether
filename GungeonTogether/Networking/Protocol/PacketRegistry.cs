@@ -48,6 +48,10 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.PlayerLife, typeof(PlayerLifePacket) },
             { PacketType.RoomObject, typeof(RoomObjectPacket) },
             { PacketType.GenerationDecisions, typeof(GenerationDecisionsPacket) },
+            { PacketType.Explosion, typeof(ExplosionPacket) },
+            { PacketType.EnemyHit, typeof(EnemyHitPacket) },
+            { PacketType.Goop, typeof(GoopPacket) },
+            { PacketType.Beam, typeof(BeamPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

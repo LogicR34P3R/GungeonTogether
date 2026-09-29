@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using Brave.BulletScript;
@@ -71,6 +72,30 @@ namespace GungeonTogether.Patches
             ProjectileReplicator.EndShooter();
             return __exception;
         }
+    }
+
+    // Gunjurer spin attacks (WizardSpinShootBehavior): bullets are released in ContinuousUpdate and,
+    // when the attack ends early or the caster dies, in FreeRemainingProjectiles. Compare the held
+    // bullets before and after each.
+
+    [HarmonyPatch(typeof(WizardSpinShootBehavior), nameof(WizardSpinShootBehavior.ContinuousUpdate))]
+    internal static class WizardSpinShootBehavior_ContinuousUpdate_Patch
+    {
+        private static void Prefix(List<Tuple<Projectile, float>> ___m_bulletPositions, out List<Projectile> __state) =>
+            __state = ProjectileReplicator.HeldSpinBullets(___m_bulletPositions);
+
+        private static void Postfix(WizardSpinShootBehavior __instance, AIActor ___m_aiActor, List<Tuple<Projectile, float>> ___m_bulletPositions, List<Projectile> __state) =>
+            ProjectileReplicator.CaptureSpinChanges(__instance, ___m_aiActor, ___m_bulletPositions, __state);
+    }
+
+    [HarmonyPatch(typeof(WizardSpinShootBehavior), "FreeRemainingProjectiles")]
+    internal static class WizardSpinShootBehavior_FreeRemainingProjectiles_Patch
+    {
+        private static void Prefix(List<Tuple<Projectile, float>> ___m_bulletPositions, out List<Projectile> __state) =>
+            __state = ProjectileReplicator.HeldSpinBullets(___m_bulletPositions);
+
+        private static void Postfix(WizardSpinShootBehavior __instance, AIActor ___m_aiActor, List<Tuple<Projectile, float>> ___m_bulletPositions, List<Projectile> __state) =>
+            ProjectileReplicator.CaptureSpinChanges(__instance, ___m_aiActor, ___m_bulletPositions, __state);
     }
 
     /// <summary>Hot path (every projectile, players' too) - a no-op outside an AIShooter volley.</summary>

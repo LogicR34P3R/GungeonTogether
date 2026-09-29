@@ -177,6 +177,7 @@ namespace GungeonTogether.Networking.Replication
                 IsGrounded = true,
                 IsDodgeRolling = player.IsDodgeRolling,
                 CharacterId = (int)player.characterIdentity,
+                AltCostume = player.IsUsingAlternateCostume,
                 // The frame actually on screen, so the remote avatar mirrors every animation as-is.
                 SpriteId = player.sprite != null ? player.sprite.spriteId : -1,
                 FlipX = player.sprite != null && player.sprite.FlipX,

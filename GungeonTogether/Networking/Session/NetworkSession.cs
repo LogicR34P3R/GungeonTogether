@@ -54,7 +54,11 @@ namespace GungeonTogether.Networking.Session
         // 25: RoomObject.TableMoved became ObjectMoved + MovableKind (tables, kickables, minecarts).
         // 26: RoomObject.Serial/Clip, CartSpawned (host-only minecart factories).
         // 27: EnemyState.TargetId; script replay (BossScriptStart) now for every enemy, not just bosses.
-        public const int ProtocolVersion = 27;
+        // 28: PlayerPosition.AltCostume; BossScriptStart.TargetId/BankPath.
+        // 29: added Explosion (host explosions replayed on clients).
+        // 30: added EnemyHit (melee/leap/grab on a client), Goop (enemy goop), Beam (enemy lasers).
+        // 31: EnemyProjectile.Radius + SpinHold/SpinRelease kinds, Explosion effect name, Goop arc curve.
+        public const int ProtocolVersion = 31;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -209,6 +213,10 @@ namespace GungeonTogether.Networking.Session
             LootReplicator.Instance.ResetSessionState();
             ConsumablesReplicator.Instance.ResetSessionState();
             ProjectileReplicator.Instance.ResetSessionState();
+            ExplosionReplicator.Instance.ResetSessionState();
+            EnemyHitReplicator.Instance.ResetSessionState();
+            GoopReplicator.Instance.ResetSessionState();
+            BeamReplicator.Instance.ResetSessionState();
             DamageReplicator.Instance.ResetSessionState();
             ScriptReplicator.Instance.ResetSessionState();
             PlayerShotReplicator.Instance.ResetSessionState();
@@ -479,6 +487,22 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.RoomObject:
                     RoomObjectReplicator.Instance.HandleRoomObject(senderId, (RoomObjectPacket)packet);
+                    break;
+
+                case PacketType.Explosion:
+                    if (IsClient) ExplosionReplicator.Instance.HandleExplosion((ExplosionPacket)packet);
+                    break;
+
+                case PacketType.EnemyHit:
+                    if (IsClient) EnemyHitReplicator.Instance.HandleHit((EnemyHitPacket)packet);
+                    break;
+
+                case PacketType.Goop:
+                    if (IsClient) GoopReplicator.Instance.HandleGoop((GoopPacket)packet);
+                    break;
+
+                case PacketType.Beam:
+                    if (IsClient) BeamReplicator.Instance.HandleBeam((BeamPacket)packet);
                     break;
 
                 // Both directions: the host also relays a client's loot to other clients.

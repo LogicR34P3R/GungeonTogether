@@ -34,11 +34,29 @@ namespace GungeonTogether.Networking.Players
             SpeculativeRigidbody body = go.AddComponent<SpeculativeRigidbody>();
             body.CollideWithOthers = false;
             body.CollideWithTileMap = false;
-            body.PixelColliders = new List<PixelCollider> { PlayerSizedHitbox() };
+            // A ground collider too: behaviours read the target's GroundPixelCollider (the
+            // Tarnisher's grab) and ground centre, and there's no null check where they do.
+            body.PixelColliders = new List<PixelCollider> { PlayerSizedGround(), PlayerSizedHitbox() };
 
             RemotePlayerTarget target = go.AddComponent<RemotePlayerTarget>();
             target.SteamId = steamId;
             return target;
+        }
+
+        /// <summary>The local player's feet collider shape.</summary>
+        private static PixelCollider PlayerSizedGround()
+        {
+            PlayerController local = GameManager.HasInstance ? GameManager.Instance.PrimaryPlayer : null;
+            PixelCollider ground = local != null && local.specRigidbody != null ? local.specRigidbody.GroundPixelCollider : null;
+            return new PixelCollider
+            {
+                ColliderGenerationMode = PixelCollider.PixelColliderGeneration.Manual,
+                CollisionLayer = CollisionLayer.PlayerCollider,
+                ManualOffsetX = ground != null ? ground.Offset.x : 3,
+                ManualOffsetY = ground != null ? ground.Offset.y : 0,
+                ManualWidth = ground != null ? ground.Dimensions.x : 10,
+                ManualHeight = ground != null ? ground.Dimensions.y : 4
+            };
         }
 
         /// <summary>The local player's hitbox shape (characters differ only slightly), so enemies aim at the body's centre.</summary>
@@ -55,6 +73,24 @@ namespace GungeonTogether.Networking.Players
                 ManualWidth = hitbox != null ? hitbox.Dimensions.x : 10,
                 ManualHeight = hitbox != null ? hitbox.Dimensions.y : 12
             };
+        }
+
+        /// <summary>
+        /// AIActor line-of-sight prefix. The physics raycast skips bodies with CollideWithOthers off,
+        /// so enemies never "saw" a stand-in and every attack needing line of sight held fire - they
+        /// turned towards the client but only ever shot the host. Collides for this one raycast.
+        /// Returns the body to restore afterwards (null when it isn't a stand-in).
+        /// </summary>
+        public static SpeculativeRigidbody BeginSightCheck(SpeculativeRigidbody target)
+        {
+            if (target == null || target.CollideWithOthers || target.GetComponent<RemotePlayerTarget>() == null) return null;
+            target.CollideWithOthers = true;
+            return target;
+        }
+
+        public static void EndSightCheck(SpeculativeRigidbody target)
+        {
+            if (target != null) target.CollideWithOthers = false;
         }
 
         /// <summary>After the avatar moved: the rigidbody keeps its own position (see CLAUDE.md).</summary>

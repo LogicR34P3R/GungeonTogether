@@ -392,6 +392,27 @@ namespace GungeonTogether.Networking.Replication
             NetworkSession.Instance.SendPacket(targetId, new RoomSealStatePacket { RoomName = _hostSealedRoom, Sealed = true }, reliable: true);
         }
 
+        /// <summary>
+        /// Host: the id clients know an attacking enemy by, announcing it right now if the 20 Hz sync
+        /// hasn't yet. An enemy attacking between appearing (wave, summon) and its first sync had no
+        /// id, so that attack was never sent. The spawn goes out ahead of the attack on the same
+        /// reliable, ordered channel, so the client has the puppet before the script start arrives.
+        /// </summary>
+        public bool TryGetSyncedId(AIActor enemy, out int id)
+        {
+            if (NetworkEntityManager.Instance.TryGetId(enemy, out id)) return true;
+            if (enemy == null || enemy.healthHaver == null || enemy.healthHaver.IsDead) return false;
+
+            RoomHandler room = enemy.ParentRoom;
+            if (room == null || !SyncedRooms().Contains(room) || !IsActiveIn(enemy, room)) return false;
+            if (string.IsNullOrEmpty(enemy.EnemyGuid)) return false;
+
+            id = NetworkEntityManager.Instance.GetOrAssignId(enemy);
+            _synced[id] = enemy;
+            BroadcastSpawn(enemy, room);
+            return true;
+        }
+
         private void BroadcastSpawn(AIActor enemy, RoomHandler room)
         {
             // The EnemyDatabase guid - what the client's GetOrLoadByGuid and boss adoption look up.
@@ -526,7 +547,7 @@ namespace GungeonTogether.Networking.Replication
         }
 
         /// <summary>Host: the steam id of the player an enemy targets - the host itself, or a client's stand-in.</summary>
-        private static ulong TargetIdOf(GameActor target)
+        internal static ulong TargetIdOf(GameActor target)
         {
             if (target is PlayerController) return SteamIdentity.GetLocalSteamId();
             RemotePlayerTarget standIn = target as RemotePlayerTarget;
@@ -820,7 +841,7 @@ namespace GungeonTogether.Networking.Replication
         }
 
         /// <summary>Client: our own player, or the stand-in on another player's avatar.</summary>
-        private static GameActor TargetFor(ulong steamId)
+        internal static GameActor TargetFor(ulong steamId)
         {
             if (steamId == 0) return null;
             if (steamId == SteamIdentity.GetLocalSteamId()) return GameManager.Instance.PrimaryPlayer;

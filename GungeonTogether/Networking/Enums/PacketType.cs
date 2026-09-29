@@ -41,5 +41,9 @@ namespace GungeonTogether.Networking.Enums
         PlayerLife = 36,
         RoomObject = 37,
         GenerationDecisions = 38,
+        Explosion = 39,
+        EnemyHit = 40,
+        Goop = 41,
+        Beam = 42,
     }
 }

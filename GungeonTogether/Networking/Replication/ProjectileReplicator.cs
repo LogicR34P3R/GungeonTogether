@@ -32,6 +32,7 @@ namespace GungeonTogether.Networking.Replication
         {
             public Projectile Projectile;
             public AIActor Owner;
+            public int EnemyId;      // resolved at capture: the owner may be gone by LateUpdate
             public EnemyProjectileKind Kind;
             public string BankName;
             public Bullet ScriptBullet; // set for BulletScript bullets - their motion lives here, not on the Projectile
@@ -54,14 +55,14 @@ namespace GungeonTogether.Networking.Replication
         {
             if (!Capturing || bank == null || bullet == null || bullet.Projectile == null) return;
             if (ScriptReplicator.IsReplayed(bullet)) return; // the client runs this script itself (4c-2)
-            Add(bullet.Projectile, bank.aiActor, EnemyProjectileKind.Bank, bullet.BankName, bullet);
+            Add(bullet.Projectile, OwnerOf(bank), EnemyProjectileKind.Bank, bullet.BankName, bullet);
         }
 
         /// <summary>CreateProjectileFromBank postfix - direct bank shots only; script bullets are captured above.</summary>
         public static void CaptureBankShot(AIBulletBank bank, GameObject projectileObject, string bulletName)
         {
             if (!Capturing || _scriptSpawnDepth > 0 || bank == null || projectileObject == null) return;
-            Add(projectileObject.GetComponent<Projectile>(), bank.aiActor, EnemyProjectileKind.Bank, bulletName, null);
+            Add(projectileObject.GetComponent<Projectile>(), OwnerOf(bank), EnemyProjectileKind.Bank, bulletName, null);
         }
 
         public static void BeginShooter(AIShooter shooter)
@@ -84,10 +85,82 @@ namespace GungeonTogether.Networking.Replication
             Add(projectileObject.GetComponent<Projectile>(), _shooter.aiActor, EnemyProjectileKind.Gun, null, null);
         }
 
+        // WizardSpinShootBehavior (Gunjurers): spawns bullets straight through SpawnManager, outside any
+        // path above, circles them around the caster, then releases them one by one - none ever
+        // reached the client. Comparing the held bullets before and after each step: a new one
+        // starts circling (SpinHold - the client circles a copy of its own), one no longer held was
+        // just sent flying (SpinRelease - the client launches that copy).
+
+        /// <summary>Prefix: the bullets circling the caster right now (null when not capturing).</summary>
+        public static List<Projectile> HeldSpinBullets(List<Tuple<Projectile, float>> held)
+        {
+            if (!Capturing || held == null) return null;
+            var projectiles = new List<Projectile>(held.Count);
+            foreach (Tuple<Projectile, float> entry in held)
+            {
+                if (entry != null && entry.First != null) projectiles.Add(entry.First);
+            }
+            return projectiles;
+        }
+
+        /// <summary>Postfix: report bullets that started circling and ones that were sent flying.</summary>
+        public static void CaptureSpinChanges(WizardSpinShootBehavior behavior, AIActor caster, List<Tuple<Projectile, float>> held, List<Projectile> before)
+        {
+            if (before == null || caster == null) return;
+            foreach (Projectile projectile in before)
+            {
+                if (projectile == null || projectile.ManualControl || IsHeld(held, projectile)) continue;
+                Add(projectile, caster, EnemyProjectileKind.SpinRelease, behavior.OverrideBulletName, null);
+            }
+
+            if (held == null || behavior.ShootPoint == null) return;
+            foreach (Tuple<Projectile, float> entry in held)
+            {
+                if (entry == null || entry.First == null || before.Contains(entry.First)) continue;
+                if (!EnemyReplicator.Instance.TryGetSyncedId(caster, out int enemyId)) return;
+                // Sent at once, reliably: its release (reported in LateUpdate) must find it there.
+                NetworkSession.Instance.Broadcast(new EnemyProjectilePacket
+                {
+                    EnemyId = enemyId,
+                    Kind = EnemyProjectileKind.SpinHold,
+                    BankName = behavior.OverrideBulletName,
+                    Position = behavior.ShootPoint.position - caster.transform.position,
+                    Direction = entry.Second,
+                    Speed = behavior.BulletCircleSpeed,
+                    Radius = behavior.BulletCircleRadius
+                }, reliable: true);
+                _statSent++;
+            }
+        }
+
+        private static bool IsHeld(List<Tuple<Projectile, float>> held, Projectile projectile)
+        {
+            if (held == null) return false;
+            foreach (Tuple<Projectile, float> entry in held)
+            {
+                if (entry != null && entry.First == projectile) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The enemy a bullet bank fires for. A bank on a child object has no aiActor of its own,
+        /// and its bullets were dropped entirely (no owner, so neither replayed nor copied).
+        /// </summary>
+        public static AIActor OwnerOf(AIBulletBank bank)
+        {
+            if (bank == null) return null;
+            return bank.aiActor != null ? bank.aiActor : bank.GetComponentInParent<AIActor>();
+        }
+
         private static void Add(Projectile projectile, AIActor owner, EnemyProjectileKind kind, string bankName, Bullet scriptBullet)
         {
             if (projectile == null || owner == null) return;
-            _captured.Add(new Captured { Projectile = projectile, Owner = owner, Kind = kind, BankName = bankName, ScriptBullet = scriptBullet });
+            // Only enemies the client has a puppet for (or gets one for right now). Resolved here, not
+            // in LateUpdate: suicide shooters (Bullats) fire, kill themselves and destroy their object
+            // in the same frame, and a bullet whose owner was gone by LateUpdate was never sent.
+            if (!EnemyReplicator.Instance.TryGetSyncedId(owner, out int enemyId)) return;
+            _captured.Add(new Captured { Projectile = projectile, Owner = owner, EnemyId = enemyId, Kind = kind, BankName = bankName, ScriptBullet = scriptBullet });
         }
 
         // ---- Host: report ----
@@ -156,9 +229,10 @@ namespace GungeonTogether.Networking.Replication
 
             foreach (Captured c in _captured)
             {
-                if (c.Projectile == null || c.Owner == null) continue;
-                // Only enemies the client has a puppet for (skips bosses and anything outside the host's room).
-                if (!NetworkEntityManager.Instance.TryGetId(c.Owner, out int enemyId)) continue;
+                if (c.Projectile == null) continue;
+                // A shot from an enemy that just died (a Bullat's burst) goes reliably: the same
+                // ordered channel as its EnemyDeath, so it can't arrive after the puppet is removed.
+                bool ownerGone = c.Owner == null || c.Owner.healthHaver == null || c.Owner.healthHaver.IsDead;
 
                 float direction, speed;
                 Vector2 position;
@@ -177,13 +251,13 @@ namespace GungeonTogether.Networking.Replication
 
                 NetworkSession.Instance.Broadcast(new EnemyProjectilePacket
                 {
-                    EnemyId = enemyId,
+                    EnemyId = c.EnemyId,
                     Kind = c.Kind,
                     BankName = c.BankName,
                     Position = position,
                     Direction = direction,
                     Speed = speed
-                }, reliable: false);
+                }, reliable: ownerGone || c.Kind == EnemyProjectileKind.SpinRelease);
                 _statSent++;
                 SampleForDiagnostics(c.Projectile, "host enemy bullet");
             }
@@ -205,11 +279,26 @@ namespace GungeonTogether.Networking.Replication
 
             try
             {
-                GameObject projectileObject = SpawnFromPuppet(puppet, packet);
-                if (projectileObject == null) return;
+                if (packet.Kind == EnemyProjectileKind.SpinHold)
+                {
+                    HoldSpinCopy(puppet, packet);
+                    return;
+                }
+                if (packet.Kind == EnemyProjectileKind.SpinRelease && TryLaunchSpinCopy(packet))
+                {
+                    _statFired++;
+                    return;
+                }
 
-                Projectile projectile = projectileObject.GetComponent<Projectile>();
-                if (projectile == null) return;
+                GameObject projectileObject = SpawnFromPuppet(puppet, packet);
+                Projectile projectile = projectileObject != null ? projectileObject.GetComponent<Projectile>() : null;
+                if (projectile == null)
+                {
+                    _statFailed++;
+                    Debug.LogWarningThrottled($"Projectile.NoPrefab:{packet.Kind}:{packet.BankName}",
+                        $"[ProjectileReplicator] Puppet {packet.EnemyId} has nothing to fire a {packet.Kind} bullet '{packet.BankName}' from.");
+                    return;
+                }
 
                 // Straight-line approximation: nothing script-driven may steer it.
                 BulletScriptBehavior scriptMotion = projectileObject.GetComponent<BulletScriptBehavior>();
@@ -232,7 +321,7 @@ namespace GungeonTogether.Networking.Replication
 
         private static GameObject SpawnFromPuppet(AIActor puppet, EnemyProjectilePacket packet)
         {
-            if (packet.Kind == EnemyProjectileKind.Bank)
+            if (packet.Kind != EnemyProjectileKind.Gun) // bank shots, and spin releases with no copy to launch
             {
                 if (puppet.bulletBank == null) return null;
                 string bulletName = string.IsNullOrEmpty(packet.BankName) ? "default" : packet.BankName;
@@ -240,8 +329,10 @@ namespace GungeonTogether.Networking.Replication
                 return puppet.bulletBank.CreateProjectileFromBank(packet.Position, packet.Direction, bulletName);
             }
 
+            // DefaultModule, not singleModule: guns with a volley (several modules) have no singleModule.
             Gun gun = puppet.aiShooter != null ? puppet.aiShooter.CurrentGun : null;
-            Projectile prefab = gun != null && gun.singleModule != null ? gun.singleModule.GetCurrentProjectile() : null;
+            ProjectileModule module = gun != null ? gun.DefaultModule : null;
+            Projectile prefab = module != null ? module.GetCurrentProjectile() : null;
             if (prefab == null) return null;
 
             GameObject spawned = SpawnManager.SpawnProjectile(prefab.gameObject, packet.Position, Quaternion.Euler(0f, 0f, packet.Direction));
@@ -250,9 +341,124 @@ namespace GungeonTogether.Networking.Replication
             return spawned;
         }
 
+        // ---- Client: Gunjurer spin copies ----
+
+        // A copy nobody launched (release lost, host left) is dropped after this long.
+        private const float MaxSpinSeconds = 12f;
+        // A release launches the circling copy nearest its position, if one is this close.
+        private const float SpinMatchDistance = 3f;
+
+        private class SpinCopy
+        {
+            public Projectile Projectile;
+            public AIActor Caster;
+            public int EnemyId;
+            public Vector2 CenterOffset;
+            public float Angle, Speed, Radius, Since;
+        }
+
+        private readonly List<SpinCopy> _spinCopies = new List<SpinCopy>();
+
+        /// <summary>The same bullet the caster spawns (WizardSpinShootBehavior's Spawn state), circling it.</summary>
+        private void HoldSpinCopy(AIActor puppet, EnemyProjectilePacket packet)
+        {
+            if (puppet.bulletBank == null) return;
+            AIBulletBank.Entry bullet = puppet.bulletBank.GetBullet(string.IsNullOrEmpty(packet.BankName) ? null : packet.BankName);
+            if (bullet == null || bullet.BulletObject == null) return;
+
+            var copy = new SpinCopy
+            {
+                Caster = puppet,
+                EnemyId = packet.EnemyId,
+                CenterOffset = packet.Position,
+                Angle = packet.Direction,
+                Speed = packet.Speed,
+                Radius = packet.Radius,
+                Since = Time.realtimeSinceStartup
+            };
+            GameObject spawned = SpawnManager.SpawnProjectile(bullet.BulletObject, SpinPosition(copy), Quaternion.identity);
+            Projectile projectile = spawned != null ? spawned.GetComponent<Projectile>() : null;
+            if (projectile == null) return;
+            if (bullet.OverrideProjectile) projectile.baseData.SetAll(bullet.ProjectileData);
+            projectile.SetOwnerSafe(puppet, puppet.ActorName);
+            projectile.Shooter = puppet.specRigidbody;
+            projectile.specRigidbody.Velocity = Vector2.zero;
+            projectile.ManualControl = true;
+            projectile.specRigidbody.CollideWithTileMap = false;
+            projectile.UpdateCollisionMask();
+            copy.Projectile = projectile;
+            _spinCopies.Add(copy);
+            _statFired++;
+        }
+
+        private static Vector2 SpinPosition(SpinCopy copy) =>
+            (Vector2)copy.Caster.transform.position + copy.CenterOffset + BraveMathCollege.DegreesToVector(copy.Angle) * copy.Radius;
+
+        private bool TryLaunchSpinCopy(EnemyProjectilePacket packet)
+        {
+            SpinCopy best = null;
+            float bestDistance = SpinMatchDistance;
+            foreach (SpinCopy copy in _spinCopies)
+            {
+                if (copy.EnemyId != packet.EnemyId || !IsAlive(copy.Projectile)) continue;
+                float distance = Vector2.Distance(copy.Projectile.transform.position, packet.Position);
+                if (distance < bestDistance)
+                {
+                    best = copy;
+                    bestDistance = distance;
+                }
+            }
+            if (best == null) return false;
+
+            _spinCopies.Remove(best);
+            Projectile projectile = best.Projectile;
+            projectile.ManualControl = false;
+            projectile.specRigidbody.CollideWithTileMap = true;
+            projectile.baseData.speed = packet.Speed;
+            projectile.UpdateSpeed();
+            projectile.SendInDirection(BraveMathCollege.DegreesToVector(packet.Direction), resetDistance: true);
+            projectile.transform.rotation = Quaternion.Euler(0f, 0f, packet.Direction);
+            return true;
+        }
+
+        // Pooled projectiles are deactivated, not destroyed, when they die.
+        private static bool IsAlive(Projectile projectile) => projectile != null && projectile.gameObject.activeInHierarchy;
+
+        /// <summary>Circles the copies the way WizardSpinShootBehavior.ContinuousUpdate does: by velocity, so they still collide.</summary>
+        private void Update()
+        {
+            if (_spinCopies.Count == 0) return;
+            float dt = BraveTime.DeltaTime;
+            for (int i = _spinCopies.Count - 1; i >= 0; i--)
+            {
+                SpinCopy copy = _spinCopies[i];
+                if (!IsAlive(copy.Projectile) || !copy.Projectile.ManualControl)
+                {
+                    _spinCopies.RemoveAt(i);
+                    continue;
+                }
+                if (copy.Caster == null || Time.realtimeSinceStartup - copy.Since > MaxSpinSeconds)
+                {
+                    copy.Projectile.DieInAir();
+                    _spinCopies.RemoveAt(i);
+                    continue;
+                }
+                if (dt <= 0f) continue;
+                copy.Angle += copy.Speed * dt;
+                Vector2 target = SpinPosition(copy);
+                copy.Projectile.specRigidbody.Velocity = (target - (Vector2)copy.Projectile.transform.position) / dt;
+                copy.Projectile.ResetDistance();
+            }
+        }
+
         /// <summary>Called from NetworkSession.Shutdown.</summary>
         public void ResetSessionState()
         {
+            foreach (SpinCopy copy in _spinCopies)
+            {
+                if (IsAlive(copy.Projectile)) copy.Projectile.DieInAir();
+            }
+            _spinCopies.Clear();
             _captured.Clear();
             _scriptSpawnDepth = 0;
             _shooterDepth = 0;

@@ -33,6 +33,16 @@ namespace GungeonTogether.Patches
     /// Skipping prefix (returns nothing): a client's minecart factories spawn only when the host's
     /// did (RoomObjectReplicator.SpawnCartForHost). The postfix tracks the new cart. Protected, so by name.
     /// </summary>
+    /// <summary>
+    /// Skipping prefix, for carts the other side is driving: the wheel animation is picked from
+    /// physics velocity, which such a cart doesn't have, so the synced animation froze every frame.
+    /// </summary>
+    [HarmonyPatch(typeof(MineCartController), "UpdateAnimations")]
+    internal static class MineCartController_UpdateAnimations_Patch
+    {
+        private static bool Prefix(MineCartController __instance) => RoomObjectReplicator.AllowCartAnimation(__instance);
+    }
+
     [HarmonyPatch(typeof(MineCartFactory), "DoSpawnCart")]
     internal static class MineCartFactory_DoSpawnCart_Patch
     {

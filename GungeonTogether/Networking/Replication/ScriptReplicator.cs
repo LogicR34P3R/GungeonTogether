@@ -93,9 +93,24 @@ namespace GungeonTogether.Networking.Replication
             // Any synced enemy, not just bosses: regular enemies' scripts (book casters, chain bullets...)
             // spawn bullets that stand still in a pattern and only later get their speed, which the
             // straight-line copies (4a) never saw - they hung in the air on the client.
-            AIActor enemy = bank != null ? bank.aiActor : null;
-            if (enemy == null) return;
-            if (!NetworkEntityManager.Instance.TryGetId(enemy, out int enemyId)) return;
+            AIActor enemy = ProjectileReplicator.OwnerOf(bank);
+            if (enemy == null)
+            {
+                _statHostSkipped++;
+                return;
+            }
+            if (!EnemyReplicator.Instance.TryGetSyncedId(enemy, out int enemyId))
+            {
+                _statHostSkipped++;
+                return;
+            }
+
+            // Re-initialising a source (AIShooter.ShootBulletScript reuses one) orphans its old root
+            // on the host: nothing ticks it any more. The client's copy would carry on firing.
+            if (_hostSources.TryGetValue(source, out int previousId) && !source.IsEnded)
+            {
+                NetworkSession.Instance.Broadcast(new BossScriptStopPacket { ScriptId = previousId }, reliable: true);
+            }
 
             int seed = _seedSource.Next(1, int.MaxValue);
             int scriptId = _nextScriptId++;
@@ -110,9 +125,21 @@ namespace GungeonTogether.Networking.Replication
                 ScriptTypeName = source.BulletScript.scriptTypeName,
                 Offset = offset,
                 Rotation = source.transform.eulerAngles.z,
-                Seed = seed
+                Seed = seed,
+                TargetId = EnemyReplicator.TargetIdOf(enemy.PlayerTarget),
+                BankPath = PathBelow(enemy.transform, bank.transform)
             }, reliable: true);
+            _statHostStarted++;
             Debug.Log($"[ScriptReplicator] Enemy {enemyId} started {source.BulletScript.scriptTypeName} (script {scriptId}, seed {seed}).");
+        }
+
+        /// <summary>Path of a child below root, for Transform.Find; "" for root itself or anything outside it (a temporary spawner).</summary>
+        private static string PathBelow(Transform root, Transform child)
+        {
+            if (child == null || child == root || !child.IsChildOf(root)) return "";
+            string path = child.name;
+            for (Transform t = child.parent; t != null && t != root; t = t.parent) path = t.name + "/" + path;
+            return path;
         }
 
         /// <summary>BulletScriptSource.Initialize finalizer: the pending stream is only for this call.</summary>
@@ -208,11 +235,67 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Client ----
 
+        // A start whose puppet isn't here yet (still spawning, or our level is still loading) waits
+        // this long rather than being dropped - dropped starts were attacks the client never saw.
+        private const float PendingStartTimeout = 1f;
+
+        private struct PendingStart
+        {
+            public BossScriptStartPacket Packet;
+            public float Since;
+        }
+
+        private readonly List<PendingStart> _pendingStarts = new List<PendingStart>();
+
         public void HandleStart(BossScriptStartPacket packet)
+        {
+            _statReceived++;
+            if (string.IsNullOrEmpty(packet.ScriptTypeName)) return;
+            if (!TryStart(packet)) _pendingStarts.Add(new PendingStart { Packet = packet, Since = Time.realtimeSinceStartup });
+        }
+
+        private void RetryPendingStarts()
+        {
+            if (_pendingStarts.Count == 0) return;
+            float now = Time.realtimeSinceStartup;
+            for (int i = _pendingStarts.Count - 1; i >= 0; i--)
+            {
+                PendingStart pending = _pendingStarts[i];
+                if (TryStart(pending.Packet))
+                {
+                    _pendingStarts.RemoveAt(i);
+                }
+                else if (now - pending.Since > PendingStartTimeout)
+                {
+                    _pendingStarts.RemoveAt(i);
+                    _statNoPuppet++;
+                    Debug.LogWarningThrottled($"Script.NoPuppet:{pending.Packet.ScriptTypeName}",
+                        $"[ScriptReplicator] No puppet for enemy {pending.Packet.EnemyId}; dropped its {pending.Packet.ScriptTypeName}.");
+                }
+            }
+        }
+
+        /// <returns>False only when the puppet isn't there (yet) - worth retrying.</returns>
+        private bool TryStart(BossScriptStartPacket packet)
         {
             GameObject remote = NetworkEntityManager.Instance.GetRemote(packet.EnemyId);
             AIActor puppet = remote != null ? remote.GetComponent<AIActor>() : null;
-            if (puppet == null || puppet.bulletBank == null || string.IsNullOrEmpty(packet.ScriptTypeName)) return;
+            if (puppet == null) return false;
+
+            Transform bankTransform = string.IsNullOrEmpty(packet.BankPath) ? null : puppet.transform.Find(packet.BankPath);
+            AIBulletBank bank = bankTransform != null ? bankTransform.GetComponent<AIBulletBank>() : null;
+            if (bank == null) bank = puppet.bulletBank;
+            if (bank == null)
+            {
+                _statFailed++;
+                Debug.LogWarningThrottled($"Script.NoBank:{packet.ScriptTypeName}",
+                    $"[ScriptReplicator] Puppet {packet.EnemyId} has no bullet bank for {packet.ScriptTypeName}.");
+                return true;
+            }
+
+            // Aim where the host's enemy aimed: scripts read the target on their first tick.
+            GameActor target = EnemyReplicator.TargetFor(packet.TargetId);
+            if (target != null) puppet.PlayerTarget = target;
 
             // A child object of the puppet stands in for the host's script source (often a shoot point).
             var sourceObject = new GameObject("GungeonTogether_BossScript_" + packet.ScriptId);
@@ -221,7 +304,7 @@ namespace GungeonTogether.Networking.Replication
             sourceObject.transform.rotation = Quaternion.Euler(0f, 0f, packet.Rotation);
 
             BulletScriptSource source = sourceObject.AddComponent<BulletScriptSource>();
-            source.BulletManager = puppet.bulletBank;
+            source.BulletManager = bank;
             source.BulletScript = new BulletScriptSelector { scriptTypeName = packet.ScriptTypeName };
 
             _pendingRootStream = NewStream(packet.Seed);
@@ -231,10 +314,11 @@ namespace GungeonTogether.Networking.Replication
             }
             catch (System.Exception e)
             {
+                _statFailed++;
                 Debug.LogWarningThrottled($"Script.StartFailed:{packet.ScriptTypeName}",
                     $"[ScriptReplicator] Couldn't replay {packet.ScriptTypeName} on enemy {packet.EnemyId}: {e.Message}");
                 Object.Destroy(sourceObject);
-                return;
+                return true;
             }
             finally
             {
@@ -242,11 +326,14 @@ namespace GungeonTogether.Networking.Replication
             }
 
             _clientSources[packet.ScriptId] = source;
+            _statReplayed++;
             Debug.Log($"[ScriptReplicator] Replaying {packet.ScriptTypeName} on enemy {packet.EnemyId} (script {packet.ScriptId}).");
+            return true;
         }
 
         public void HandleStop(BossScriptStopPacket packet)
         {
+            _pendingStarts.RemoveAll(p => p.Packet.ScriptId == packet.ScriptId);
             if (!_clientSources.TryGetValue(packet.ScriptId, out BulletScriptSource source)) return;
             _clientSources.Remove(packet.ScriptId);
             if (source == null) return;
@@ -256,8 +343,27 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Housekeeping ----
 
+        // Diagnostics, logged at Info every 15s when anything happened (next to ProjectileReplicator's):
+        // replays only logged at Debug, so a playtest log couldn't tell a missing attack's cause.
+        private const float StatsInterval = 15f;
+        private static int _statHostStarted, _statHostSkipped, _statReceived, _statReplayed, _statNoPuppet, _statFailed;
+        private float _nextStatsTime;
+
+        private void LogStats()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now < _nextStatsTime) return;
+            _nextStatsTime = now + StatsInterval;
+            if (_statHostStarted + _statHostSkipped + _statReceived == 0) return;
+            Debug.LogInfo($"[ScriptReplicator] Last {StatsInterval:0}s: host started={_statHostStarted}, not synced={_statHostSkipped}; " +
+                          $"received={_statReceived}, replayed={_statReplayed}, noPuppet={_statNoPuppet}, failed={_statFailed}");
+            _statHostStarted = _statHostSkipped = _statReceived = _statReplayed = _statNoPuppet = _statFailed = 0;
+        }
+
         private void Update()
         {
+            RetryPendingStarts();
+            LogStats();
             if (Time.realtimeSinceStartup < _nextSweepTime) return;
             _nextSweepTime = Time.realtimeSinceStartup + SweepInterval;
 
@@ -305,6 +411,7 @@ namespace GungeonTogether.Networking.Replication
                 if (source != null) Object.Destroy(source.gameObject);
             }
             _clientSources.Clear();
+            _pendingStarts.Clear();
             _hostSources.Clear();
             _streams.Clear();
             _frames.Clear();

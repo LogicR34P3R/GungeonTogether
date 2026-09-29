@@ -1,4 +1,5 @@
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 namespace GungeonTogether.Networking.Entities
 {
@@ -70,6 +71,45 @@ namespace GungeonTogether.Networking.Entities
             float ahead = Mathf.Min(Time.realtimeSinceStartup - _targetTime + _leadSeconds, MaxExtrapolationSeconds);
             Vector2 predicted = _target + _velocity * ahead;
             MoveTo(Vector2.Lerp(transform.position, predicted, Mathf.Clamp01(Time.deltaTime * FollowRate)));
+            CheckContact();
+        }
+
+        // Touch damage. The game deals it from physics collisions (AIActor.OnCollision), but a puppet
+        // is moved by setting its position, which raises none: a charging or dashing puppet ran
+        // straight through a client standing still. Only the client walking into it collided.
+        // Same rule as AIActor.OnCollision; the cooldown stands in for its ghost-collision exception.
+        private const float ContactCooldown = 0.5f;
+        private float _nextContactTime;
+        private AIActor _actor;
+
+        private void CheckContact()
+        {
+            if (EnemyId == 0 || SawDying || Time.time < _nextContactTime) return;
+            if (_body == null || !_body.enabled || !_body.CollideWithOthers) return;
+            if (_actor == null) _actor = GetComponent<AIActor>();
+            if (_actor == null || !_actor.CanTargetPlayers || _actor.IsFrozen || _actor.IsGone
+                || _actor.healthHaver == null || _actor.healthHaver.IsDead) return;
+
+            PlayerController player = GameManager.HasInstance ? GameManager.Instance.PrimaryPlayer : null;
+            if (player == null || player.IsGhost || player.healthHaver == null || player.healthHaver.IsDead || player.specRigidbody == null) return;
+            PixelCollider mine = _body.PrimaryPixelCollider;
+            PixelCollider theirs = player.specRigidbody.PrimaryPixelCollider;
+            if (mine == null || theirs == null || !mine.Overlaps(theirs)) return;
+
+            _nextContactTime = Time.time + ContactCooldown;
+            Vector2 away = player.specRigidbody.UnitCenter - _body.UnitCenter;
+            away = away.sqrMagnitude < 0.0001f ? Random.insideUnitCircle.normalized : away.normalized;
+            if (player.ReceivesTouchDamage)
+            {
+                float damage = _actor.IsBlackPhantom ? 1f : _actor.IsCheezen ? 0f : _actor.CollisionDamage;
+                if (damage > 0f)
+                {
+                    player.healthHaver.ApplyDamage(damage, away, _actor.GetActorName(), CoreDamageTypes.None,
+                        _actor.IsBlackPhantom ? DamageCategory.BlackBullet : DamageCategory.Collision);
+                }
+                if (player.knockbackDoer != null) player.knockbackDoer.ApplySourcedKnockback(away, _actor.CollisionKnockbackStrength, gameObject);
+            }
+            if (_actor.CollisionSetsPlayerOnFire) player.IsOnFire = true;
         }
 
         private void MoveTo(Vector2 position)
