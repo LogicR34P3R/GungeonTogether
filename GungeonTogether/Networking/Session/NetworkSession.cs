@@ -59,7 +59,7 @@ namespace GungeonTogether.Networking.Session
         // 30: added EnemyHit (melee/leap/grab on a client), Goop (enemy goop), Beam (enemy lasers).
         // 31: EnemyProjectile.Radius + SpinHold/SpinRelease kinds, Explosion effect name, Goop arc curve.
         // 32: PlayerPosition.SpriteCollection (sheet of the frame) replaces AltCostume.
-        public const int ProtocolVersion = 32;
+        public const int ProtocolVersion = 33;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.

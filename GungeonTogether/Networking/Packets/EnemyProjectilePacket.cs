@@ -8,7 +8,7 @@ namespace GungeonTogether.Networking.Packets
     public enum EnemyProjectileKind : byte
     {
         Bank = 0, // from the enemy's AIBulletBank (BulletScripts and direct bank shots) - BankName says which bullet
-        Gun = 1,  // from the enemy's held gun (AIShooter volleys)
+        Gun = 1,  // from the enemy's held gun or volley - BankName: the bank bullet it fires instead, if any
         // Gunjurer spin attack (WizardSpinShootBehavior): a bullet starts circling the caster -
         // Position = circle centre relative to the enemy, Direction = its angle on the circle,
         // Speed = degrees per second, Radius = circle radius.

@@ -22,7 +22,8 @@ namespace GungeonTogether.Networking.Replication
     ///
     /// Host capture, via Harmony (GungeonTogether.Patches.ProjectilePatches), covers the three ways
     /// enemies fire: BulletScripts (AIBulletBank.BulletSpawnedHandler), direct bank shots
-    /// (CreateProjectileFromBank) and held-gun volleys (AIShooter → SpawnManager.SpawnProjectile).
+    /// (CreateProjectileFromBank) and held guns: AIShooter volleys and equipped guns
+    /// (Gun.ShootSingleProjectile), both → SpawnManager.SpawnProjectile.
     /// Callers adjust speed after spawning (black phantoms, override data), so captures are reported
     /// in LateUpdate with their final speed/direction rather than at spawn.
     /// </summary>
@@ -40,8 +41,9 @@ namespace GungeonTogether.Networking.Replication
 
         private static readonly List<Captured> _captured = new List<Captured>();
         private static int _scriptSpawnDepth;
-        private static int _shooterDepth;
-        private static AIShooter _shooter;
+        private static int _shotDepth;
+        private static AIActor _shotOwner;
+        private static string _shotBankName;
 
         private static bool Capturing => NetworkSession.Instance.IsHost;
 
@@ -65,24 +67,63 @@ namespace GungeonTogether.Networking.Replication
             Add(projectileObject.GetComponent<Projectile>(), OwnerOf(bank), EnemyProjectileKind.Bank, bulletName, null);
         }
 
-        public static void BeginShooter(AIShooter shooter)
+        // Held-gun shots (volleys and equipped guns): the enemy firing, and the bank bullet it fires
+        // instead of its gun's own, if any. Set by the outermost Begin only; the depth keeps every
+        // Begin/End pair balanced on both sides, players' shots included.
+        public static void BeginShooter(AIShooter shooter, string overrideBulletName)
         {
-            _shooterDepth++;
-            _shooter = shooter;
+            if (_shotDepth++ > 0 || shooter == null || !Capturing) return;
+            _shotOwner = shooter.aiActor;
+            _shotBankName = BankEntryWithBullet(shooter.bulletBank, string.IsNullOrEmpty(overrideBulletName) ? shooter.bulletName : overrideBulletName);
         }
 
-        public static void EndShooter()
+        public static void EndShooter() => EndShot();
+
+        public static void BeginGunShot(Gun gun, GameObject overrideBulletObject)
         {
-            if (--_shooterDepth > 0) return;
-            _shooterDepth = 0;
-            _shooter = null;
+            if (_shotDepth++ > 0 || gun == null || !Capturing) return;
+            _shotOwner = gun.CurrentOwner as AIActor;
+            _shotBankName = _shotOwner != null && overrideBulletObject != null ? BankEntryFor(_shotOwner.bulletBank, overrideBulletObject) : null;
         }
 
-        /// <summary>SpawnManager.SpawnProjectile postfix - hot path; only captures inside an AIShooter volley.</summary>
+        public static void EndGunShot() => EndShot();
+
+        private static void EndShot()
+        {
+            if (--_shotDepth > 0) return;
+            _shotDepth = 0;
+            _shotOwner = null;
+            _shotBankName = null;
+        }
+
+        /// <summary>SpawnManager.SpawnProjectile postfix - hot path; only captures inside an enemy's held-gun shot.</summary>
         public static void OnProjectileSpawned(GameObject projectileObject)
         {
-            if (_shooterDepth == 0 || _shooter == null || projectileObject == null || !Capturing) return;
-            Add(projectileObject.GetComponent<Projectile>(), _shooter.aiActor, EnemyProjectileKind.Gun, null, null);
+            if (_shotDepth == 0 || _shotOwner == null || projectileObject == null || !Capturing) return;
+            Add(projectileObject.GetComponent<Projectile>(), _shotOwner, EnemyProjectileKind.Gun, _shotBankName, null);
+        }
+
+        /// <summary>The bank entry called name, if it replaces the gun's bullet (AIShooter.GetBulletEntry, minus its error log).</summary>
+        private static AIBulletBank.Entry FindBankEntry(AIBulletBank bank, string name)
+        {
+            if (bank == null || bank.Bullets == null || string.IsNullOrEmpty(name)) return null;
+            foreach (AIBulletBank.Entry entry in bank.Bullets)
+            {
+                if (entry != null && entry.Name == name && entry.BulletObject != null) return entry;
+            }
+            return null;
+        }
+
+        private static string BankEntryWithBullet(AIBulletBank bank, string name) => FindBankEntry(bank, name)?.Name;
+
+        private static string BankEntryFor(AIBulletBank bank, GameObject bulletObject)
+        {
+            if (bank == null || bank.Bullets == null) return null;
+            foreach (AIBulletBank.Entry entry in bank.Bullets)
+            {
+                if (entry != null && entry.BulletObject == bulletObject) return entry.Name;
+            }
+            return null;
         }
 
         // WizardSpinShootBehavior (Gunjurers): spawns bullets straight through SpawnManager, outside any
@@ -329,15 +370,27 @@ namespace GungeonTogether.Networking.Replication
                 return puppet.bulletBank.CreateProjectileFromBank(packet.Position, packet.Direction, bulletName);
             }
 
-            // DefaultModule, not singleModule: guns with a volley (several modules) have no singleModule.
-            Gun gun = puppet.aiShooter != null ? puppet.aiShooter.CurrentGun : null;
-            ProjectileModule module = gun != null ? gun.DefaultModule : null;
-            Projectile prefab = module != null ? module.GetCurrentProjectile() : null;
+            // The bank bullet the host's shooter fired instead of its gun's own (AIShooter.bulletName),
+            // else the gun's bullet, else the gunless volley's (Gull-style shooters have no gun).
+            AIBulletBank.Entry entry = FindBankEntry(puppet.bulletBank, packet.BankName);
+            GameObject prefab = entry != null ? entry.BulletObject : null;
+            if (prefab == null && puppet.aiShooter != null)
+            {
+                // DefaultModule, not singleModule: guns with a volley (several modules) have no singleModule.
+                Gun gun = puppet.aiShooter.CurrentGun;
+                ProjectileModule module = gun != null ? gun.DefaultModule
+                    : puppet.aiShooter.volley != null && puppet.aiShooter.volley.projectiles.Count > 0 ? puppet.aiShooter.volley.projectiles[0] : null;
+                Projectile moduleProjectile = module != null ? module.GetCurrentProjectile() : null;
+                if (moduleProjectile != null) prefab = moduleProjectile.gameObject;
+            }
             if (prefab == null) return null;
 
-            GameObject spawned = SpawnManager.SpawnProjectile(prefab.gameObject, packet.Position, Quaternion.Euler(0f, 0f, packet.Direction));
+            GameObject spawned = SpawnManager.SpawnProjectile(prefab, packet.Position, Quaternion.Euler(0f, 0f, packet.Direction));
             Projectile projectile = spawned != null ? spawned.GetComponent<Projectile>() : null;
-            if (projectile != null) projectile.SetOwnerSafe(puppet, puppet.ActorName);
+            if (projectile == null) return spawned;
+            if (entry != null && entry.OverrideProjectile) projectile.baseData.SetAll(entry.ProjectileData);
+            projectile.SetOwnerSafe(puppet, puppet.ActorName);
+            projectile.Shooter = puppet.specRigidbody;
             return spawned;
         }
 
@@ -461,8 +514,9 @@ namespace GungeonTogether.Networking.Replication
             _spinCopies.Clear();
             _captured.Clear();
             _scriptSpawnDepth = 0;
-            _shooterDepth = 0;
-            _shooter = null;
+            _shotDepth = 0;
+            _shotOwner = null;
+            _shotBankName = null;
         }
     }
 }

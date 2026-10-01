@@ -299,7 +299,7 @@ namespace GungeonTogether.Networking.Replication
         /// <summary>
         /// DungeonDoorController.CheckForPlayerCollision prefix. Like vanilla co-op, the local player
         /// can open a door only while every living partner is next to them, so nobody walks into a
-        /// fight alone - or gets warped into one. False keeps the door shut.
+        /// fight alone. False keeps the door shut.
         /// </summary>
         public static bool CanOpenDoor(DungeonDoorController door, SpeculativeRigidbody toucher)
         {
@@ -357,15 +357,6 @@ namespace GungeonTogether.Networking.Replication
             if (now < _nextDoorHintTime || local.sprite == null) return;
             _nextDoorHintTime = now + DoorHintInterval;
             TextBoxManager.ShowThoughtBubble(local.sprite.WorldTopCenter + new Vector2(0f, 0.5f), local.transform, 1.5f, "Waiting for my partner...");
-        }
-
-        /// <summary>Latest known position of a remote player, if their avatar exists.</summary>
-        public bool TryGetRemotePosition(ulong steamId, out Vector2 position)
-        {
-            position = Vector2.zero;
-            if (!TryGetLiveAvatar(steamId, out var player)) return false;
-            position = player.NetworkPosition;
-            return true;
         }
 
         /// <summary>

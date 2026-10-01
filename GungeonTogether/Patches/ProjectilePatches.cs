@@ -41,7 +41,7 @@ namespace GungeonTogether.Patches
     [HarmonyPatch(typeof(AIShooter), "ShootAtTarget", new[] { typeof(ProjectileModule), typeof(string), typeof(Vector3), typeof(float) })]
     internal static class AIShooter_ShootAtTarget_Patch
     {
-        private static void Prefix(AIShooter __instance) => ProjectileReplicator.BeginShooter(__instance);
+        private static void Prefix(AIShooter __instance, string overrideBulletName) => ProjectileReplicator.BeginShooter(__instance, overrideBulletName);
 
         private static Exception Finalizer(Exception __exception)
         {
@@ -53,7 +53,7 @@ namespace GungeonTogether.Patches
     [HarmonyPatch(typeof(AIShooter), "ShootInDirection", new[] { typeof(Vector2), typeof(ProjectileModule), typeof(string), typeof(Vector3), typeof(float) })]
     internal static class AIShooter_ShootInDirection_Patch
     {
-        private static void Prefix(AIShooter __instance) => ProjectileReplicator.BeginShooter(__instance);
+        private static void Prefix(AIShooter __instance, string overrideBulletName) => ProjectileReplicator.BeginShooter(__instance, overrideBulletName);
 
         private static Exception Finalizer(Exception __exception)
         {
@@ -65,11 +65,28 @@ namespace GungeonTogether.Patches
     [HarmonyPatch(typeof(AIShooter), "ShootVolleyAtTarget", new[] { typeof(Vector3) })]
     internal static class AIShooter_ShootVolleyAtTarget_Patch
     {
-        private static void Prefix(AIShooter __instance) => ProjectileReplicator.BeginShooter(__instance);
+        private static void Prefix(AIShooter __instance) => ProjectileReplicator.BeginShooter(__instance, null);
 
         private static Exception Finalizer(Exception __exception)
         {
             ProjectileReplicator.EndShooter();
+            return __exception;
+        }
+    }
+
+    /// <summary>
+    /// Equipped guns (Bullet Kin, AK-47 Kin, ...). AIShooter.Shoot goes through Gun.Attack, and
+    /// bursts and automatic fire through Gun.Update/ContinueAttack. They all end here, outside the
+    /// volley methods above, so none of these shots reached the client. Hot path (players' guns too).
+    /// </summary>
+    [HarmonyPatch(typeof(Gun), "ShootSingleProjectile")]
+    internal static class Gun_ShootSingleProjectile_Patch
+    {
+        private static void Prefix(Gun __instance, GameObject overrideBulletObject) => ProjectileReplicator.BeginGunShot(__instance, overrideBulletObject);
+
+        private static Exception Finalizer(Exception __exception)
+        {
+            ProjectileReplicator.EndGunShot();
             return __exception;
         }
     }
@@ -98,7 +115,7 @@ namespace GungeonTogether.Patches
             ProjectileReplicator.CaptureSpinChanges(__instance, ___m_aiActor, ___m_bulletPositions, __state);
     }
 
-    /// <summary>Hot path (every projectile, players' too) - a no-op outside an AIShooter volley.</summary>
+    /// <summary>Hot path (every projectile, players' too) - a no-op outside an enemy's volley or gun shot.</summary>
     [HarmonyPatch(typeof(SpawnManager), nameof(SpawnManager.SpawnProjectile), new[] { typeof(GameObject), typeof(Vector3), typeof(Quaternion), typeof(bool) })]
     internal static class SpawnManager_SpawnProjectile_Patch
     {

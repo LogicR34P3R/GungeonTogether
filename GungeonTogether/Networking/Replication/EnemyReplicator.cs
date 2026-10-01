@@ -38,8 +38,6 @@ namespace GungeonTogether.Networking.Replication
     public class EnemyReplicator : MonoSingleton<EnemyReplicator>
     {
         private const float StateSyncInterval = 0.05f; // 20 Hz; clients smooth and extrapolate between updates (NetworkPuppet)
-        // A warp into a fight is only ever a hop through the door (see WarpLocalPlayerInto).
-        private const float MaxWarpDistance = 8f;
 
         // RoomHandler keeps its pending reinforcement waves private; there's no public way to cancel them.
         private static readonly FieldInfo ReinforcementLayersField =
@@ -106,30 +104,17 @@ namespace GungeonTogether.Networking.Replication
         }
 
         /// <summary>
-        /// Host: a client walked into a room first. Enemies only run on the host, so if that room
-        /// would seal on entry (the game's own check), warp the host in - its normal room entry then
-        /// wakes the enemies and seals the doors, and both reach the client through the usual sync.
-        /// Vanilla co-op pulls the lagging player in the same way, whichever player enters first.
+        /// Host: a client changed rooms; that room's enemies get synced from now on (SyncedRooms).
+        /// Nobody is warped: doors wait for both players (PlayerReplicator.CanOpenDoor), so the
+        /// players go in together and the host's own room entry wakes the enemies.
         /// </summary>
         public void HandleClientEnteredRoom(ulong senderId, ClientEnteredRoomPacket packet)
         {
             GameManager gm = GameManager.Instance;
             if (gm == null || gm.IsLoadingLevel || gm.IsFoyer || gm.Dungeon == null) return;
 
-            // Its enemies get synced from now on, whether or not the host comes along (SyncedRooms).
             _clientRooms[senderId] = packet.RoomName ?? "";
             _nextStateSyncTime = 0f;
-
-            RoomHandler room = FindRoomByName(packet.RoomName);
-            PlayerController host = gm.PrimaryPlayer;
-            if (room == null || host == null) return;
-
-            RoomHandler hostRoom = host.CurrentRoom;
-            if (hostRoom == room) return;
-            if (hostRoom != null && hostRoom.IsSealed) return; // mid-fight; the client gets pulled back by the seal
-            if (!room.WillSealOnEntry()) return;
-
-            WarpLocalPlayerInto(room, senderId);
         }
 
         /// <summary>
@@ -192,64 +177,6 @@ namespace GungeonTogether.Networking.Replication
                 ReplayPendingSpawns();
                 ReplayPendingSealStates();
             }
-        }
-
-        /// <summary>
-        /// Brings the local player into a room another player is fighting in, if they're elsewhere:
-        /// the client when the host's room seals, the host when a client enters a combat room first.
-        /// Only a short hop through the door, now that doors wait for both players (PlayerReplicator.CanOpenDoor).
-        ///
-        /// Like vanilla co-op's ReuniteWithOtherPlayer, lands exactly where that player stands - a
-        /// spot a player can provably be. Only if their avatar is still outside the room (it lags at
-        /// the doorway) does it fall back to the nearest free floor cell, which once picked a closed-off
-        /// pocket of a room and left the host unable to move.
-        /// </summary>
-        private static void WarpLocalPlayerInto(RoomHandler room, ulong towardsPeerId)
-        {
-            PlayerController player = GameManager.Instance.PrimaryPlayer;
-            if (player == null || player.CurrentRoom == room) return;
-            // A ghost comes along too: a ghost host must still enter the room to wake its enemies.
-            if (player.healthHaver != null && player.healthHaver.IsDead && !player.IsGhost) return;
-            if (player.IsInMinecart) return;
-
-            // Doors wait for both players (PlayerReplicator.CanOpenDoor), so the other player is
-            // right at the doorway: this is a hop through the door, like vanilla co-op pushing the
-            // second player in. Never a cross-map teleport - someone far away stays where they are.
-            if (!PlayerReplicator.Instance.TryGetRemotePosition(towardsPeerId, out Vector2 otherPos)) return;
-            if (Vector2.Distance(player.transform.position, otherPos) > MaxWarpDistance)
-            {
-                Debug.LogInfo($"[EnemyReplicator] Not warping into {room.GetRoomName()}: too far from {towardsPeerId}.");
-                return;
-            }
-
-            DungeonData data = GameManager.Instance.Dungeon.data;
-            CellData otherCell = data[otherPos.ToIntVector2(VectorConversions.Floor)];
-            if (otherCell != null && otherCell.parentRoom == room && otherCell.type == CellType.FLOOR)
-            {
-                player.WarpToPoint(otherPos, useDefaultPoof: true, doFollowers: true);
-                PhysicsEngine.Instance.RegisterOverlappingGhostCollisionExceptions(player.specRigidbody);
-                Debug.LogInfo($"[EnemyReplicator] Warped onto {towardsPeerId} in {room.GetRoomName()} to join their fight.");
-                return;
-            }
-
-            IntVector2? cell = room.GetNearestAvailableCell(otherPos, IntVector2.One, CellTypes.FLOOR, false,
-                pos => !data[pos].IsPlayerInaccessible);
-            if (!cell.HasValue)
-            {
-                Debug.LogWarning($"[EnemyReplicator] No free cell to warp into {room.GetRoomName()}; staying outside.");
-                return;
-            }
-
-            // Centre the hitbox on the free cell - the transform origin isn't the hitbox centre, and
-            // putting it on the cell corner could leave the hitbox half inside a wall.
-            Vector2 hitboxOffset = (Vector2)player.transform.position - player.specRigidbody.UnitCenter;
-            player.WarpToPoint(cell.Value.ToCenterVector2() + hitboxOffset, useDefaultPoof: true, doFollowers: true);
-
-            // As the game's own TeleportToPoint does on arrival: let the player walk out of anything
-            // they overlap (wall edge, enemy, a door sealing on them). Without it they could land
-            // wedged and unable to move until warped again.
-            PhysicsEngine.Instance.RegisterOverlappingGhostCollisionExceptions(player.specRigidbody);
-            Debug.LogInfo($"[EnemyReplicator] Warped into {room.GetRoomName()} to join {towardsPeerId}'s fight.");
         }
 
         private static RoomHandler CurrentRoom()
@@ -799,6 +726,28 @@ namespace GungeonTogether.Networking.Replication
         }
 
         /// <summary>
+        /// Ends the puppet's wake-up once the host's enemy is awake. AIActor.Update ends it when the
+        /// awaken animation stops, asked through AIAnimator.IsPlaying - and with the AIAnimator off,
+        /// its action state never clears while the host's clips keep playing, so the puppet stayed
+        /// Awakening for good. Enemies that spawn hidden (invisibleUntilAwaken) then stayed IsGone
+        /// with no collisions and their gun hidden: bullets went through them like ghosts.
+        /// Does what AIActor.Update would; its next frame restores collisions and IsGone.
+        /// </summary>
+        private static void FinishAwakening(AIActor actor, EnemyStatePacket packet)
+        {
+            if (actor.State != AIActor.ActorState.Awakening) return;
+            var hostState = (AIActor.ActorState)packet.AIState;
+            if (hostState == AIActor.ActorState.Inactive || hostState == AIActor.ActorState.Awakening) return;
+
+            if (actor.aiShooter != null)
+            {
+                actor.aiShooter.ToggleGunAndHandRenderers(true, "Reinforce");
+                actor.aiShooter.ToggleGunAndHandRenderers(true, "Awaken");
+            }
+            actor.State = AIActor.ActorState.Normal;
+        }
+
+        /// <summary>
         /// Shows the host enemy's animation on its puppet: the clip it's playing (switched when the
         /// host switches, then run locally at the clip's own speed), facing and gun aim. The
         /// puppet's AIAnimator is switched off so it doesn't pick its own clips over the host's -
@@ -808,6 +757,7 @@ namespace GungeonTogether.Networking.Replication
         {
             if (actor.healthHaver != null && actor.healthHaver.IsBoss && GameManager.IsBossIntro) return;
             if (actor.aiAnimator != null && actor.aiAnimator.enabled) actor.aiAnimator.enabled = false;
+            FinishAwakening(actor, packet);
 
             tk2dSpriteAnimator animator = actor.spriteAnimator;
             if (animator != null && !string.IsNullOrEmpty(packet.Clip)
@@ -943,9 +893,8 @@ namespace GungeonTogether.Networking.Replication
 
         /// <summary>
         /// Mirrors the host's doors. The client's own rooms never seal by themselves (no local
-        /// RoomClear enemies), so this is the only thing locking them. A client outside the room
-        /// when it seals is warped in next to the host first, like vanilla co-op's
-        /// ReuniteWithOtherPlayer - otherwise it would be locked out until the host cleared it.
+        /// RoomClear enemies), so this is the only thing locking them. Nobody is warped in: doors
+        /// wait for both players, so a client outside a sealing room chose to stay out.
         /// </summary>
         private void ApplySealState(string roomName, bool isSealed)
         {
@@ -957,7 +906,6 @@ namespace GungeonTogether.Networking.Replication
             }
             if (isSealed && !room.IsSealed)
             {
-                WarpLocalPlayerInto(room, NetworkSession.Instance.HostPeerId);
                 room.SealRoom();
                 if (!_networkSealedRooms.Contains(room)) _networkSealedRooms.Add(room);
             }

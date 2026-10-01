@@ -98,9 +98,16 @@ namespace GungeonTogether.Networking.Replication
 
         // ---- Local loot ----
 
+        /// <summary>
+        /// A spawned gun isn't its own debris: Gun.DropGun parents it under a "ThrownGunProjectile"
+        /// object and returns that. Looking only on the debris itself skipped every gun (chest guns,
+        /// gun drops), so the other side never saw them.
+        /// </summary>
+        private static PickupObject PickupOf(DebrisObject debris) => debris.GetComponentInChildren<PickupObject>();
+
         private void TrackLocal(DebrisObject debris)
         {
-            PickupObject pickup = debris.GetComponent<PickupObject>();
+            PickupObject pickup = PickupOf(debris);
             if (pickup == null || pickup.PickupObjectId < 0) return; // not something we can recreate by id
 
             var tracked = new Tracked
@@ -218,7 +225,7 @@ namespace GungeonTogether.Networking.Replication
             {
                 Key = key,
                 Go = debris.gameObject,
-                Pickup = debris.GetComponent<PickupObject>(),
+                Pickup = PickupOf(debris),
                 Announced = true,
                 SpawnTime = Time.realtimeSinceStartup
             };
