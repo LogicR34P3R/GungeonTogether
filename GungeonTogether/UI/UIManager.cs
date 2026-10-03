@@ -25,11 +25,26 @@ namespace GungeonTogether.UI
 		private static readonly List<string> _memberNames = new List<string>();
 		private static bool _memberNamesDirty = true;
 
+		// Session notices (e.g. a version mismatch) show on screen even with the menu closed.
+		private const float NoticeDuration = 12f;
+		private const float NoticeWidth = 520f;
+		private static string _notice;
+		private static float _noticeUntil;
+		private static GUIStyle _noticeStyle;
+
 		public static bool IsVisible => _visible;
 
 		public static void Initialise()
 		{
 			SteamLobby.Instance.OnPlayerListChanged += () => _memberNamesDirty = true;
+			NetworkSession.Instance.NoticeRaised += ShowNotice;
+		}
+
+		private static void ShowNotice(string message)
+		{
+			if (message != _notice) Debug.LogWarning($"[UI] Notice: {message}");
+			_notice = message;
+			_noticeUntil = Time.realtimeSinceStartup + NoticeDuration;
 		}
 
 		public static void Update()
@@ -48,19 +63,33 @@ namespace GungeonTogether.UI
 		/// <summary>Called from GungeonTogetherMod.OnGUI.</summary>
 		public static void OnGUI()
 		{
-			if (!_visible) return;
+			bool showNotice = _notice != null && Time.realtimeSinceStartup < _noticeUntil;
+			if (!_visible && !showNotice) return;
 
 			float scale = Mathf.Max(1f, Screen.height / ReferenceHeight);
 			Matrix4x4 previous = GUI.matrix;
 			GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
 			try
 			{
-				_panelRect = GUILayout.Window(0x6754, _panelRect, DrawWindow, "Gungeon Together", GUILayout.Width(PanelWidth));
+				if (showNotice) DrawNotice(Screen.width / scale);
+				if (_visible) _panelRect = GUILayout.Window(0x6754, _panelRect, DrawWindow, "Gungeon Together", GUILayout.Width(PanelWidth));
 			}
 			finally
 			{
 				GUI.matrix = previous;
 			}
+		}
+
+		private static void DrawNotice(float screenWidth)
+		{
+			if (_noticeStyle == null)
+			{
+				_noticeStyle = new GUIStyle(GUI.skin.box) { wordWrap = true, fontSize = 14, padding = new RectOffset(10, 10, 8, 8) };
+				_noticeStyle.normal.textColor = new Color(1f, 0.85f, 0.4f);
+			}
+			var content = new GUIContent(_notice);
+			float height = _noticeStyle.CalcHeight(content, NoticeWidth);
+			GUI.Box(new Rect((screenWidth - NoticeWidth) / 2f, 20f, NoticeWidth, height), content, _noticeStyle);
 		}
 
 		private static void DrawWindow(int id)

@@ -78,6 +78,9 @@ namespace GungeonTogether.Networking.Session
         private readonly PacketChannel _packetChannel;
         private readonly Dictionary<ulong, PeerConnection> _peers = new Dictionary<ulong, PeerConnection>();
 
+        /// <summary>A message for the player (e.g. a version mismatch), shown by the UI.</summary>
+        public event Action<string> NoticeRaised;
+
         public NetworkRole Role { get; private set; } = NetworkRole.None;
         public bool IsHost => Role == NetworkRole.Host;
         public bool IsClient => Role == NetworkRole.Client;
@@ -616,7 +619,9 @@ namespace GungeonTogether.Networking.Session
             if (request.ProtocolVersion != ProtocolVersion)
             {
                 SendPacket(transportId, new ConnectionRejectedPacket { ProtocolVersion = ProtocolVersion }, reliable: true);
-                Debug.LogInfo($"[Session] Rejected {transportId} - protocol mismatch.");
+                Debug.LogInfo($"[Session] Rejected {transportId} - protocol mismatch (theirs={request.ProtocolVersion}, ours={ProtocolVersion}).");
+                // An outdated client can't explain the rejection itself, so the host has to.
+                RaiseVersionMismatch($"{SteamIdentity.GetPlayerName(transportId)} can't join", request.ProtocolVersion, "they have");
                 return;
             }
 
@@ -657,6 +662,7 @@ namespace GungeonTogether.Networking.Session
             if (packet.ProtocolVersion != ProtocolVersion)
             {
                 EndClientSession($"protocol mismatch (host={packet.ProtocolVersion}, local={ProtocolVersion})");
+                RaiseVersionMismatch($"Can't join {SteamIdentity.GetPlayerName(senderId)}", packet.ProtocolVersion, "the host has");
                 return;
             }
 
@@ -670,6 +676,15 @@ namespace GungeonTogether.Networking.Session
 
             _peers.Remove(senderId);
             EndClientSession($"rejected by host {senderId} (host protocol={packet.ProtocolVersion}, local={ProtocolVersion})");
+            RaiseVersionMismatch($"Can't join {SteamIdentity.GetPlayerName(senderId)}", packet.ProtocolVersion, "the host has");
+        }
+
+        /// <summary>Tells the player that the other side runs a different Gungeon Together build.</summary>
+        private void RaiseVersionMismatch(string what, int theirVersion, string whoHas)
+        {
+            string age = theirVersion < ProtocolVersion ? "an older" : "a newer";
+            NoticeRaised?.Invoke($"{what}: {whoHas} {age} version of Gungeon Together "
+                + $"(protocol {theirVersion}, yours is {ProtocolVersion}). Both players need the same mod version.");
         }
 
         private void HandleHeartbeat(ulong senderId, HeartbeatPacket packet)
