@@ -133,7 +133,11 @@ namespace GungeonTogether.Networking.Replication
                 PickupId = tracked.Pickup.PickupObjectId,
                 Position = tracked.Go.transform.position
             });
+            if (IsItem(tracked.Pickup)) Debug.LogInfo($"[LootReplicator] Sent item {tracked.Pickup.PickupObjectId} ({tracked.Key}) at {tracked.Go.transform.position}.");
         }
+
+        // Guns and items (not hearts/ammo/coins): the ones worth a log line each.
+        private static bool IsItem(PickupObject pickup) => pickup is Gun || pickup is PassiveItem || pickup is PlayerItem;
 
         private void Update()
         {
@@ -229,7 +233,8 @@ namespace GungeonTogether.Networking.Replication
                 Announced = true,
                 SpawnTime = Time.realtimeSinceStartup
             };
-            Debug.LogTrace($"[LootReplicator] Mirrored pickup {packet.PickupId} ({key}) at {packet.Position}.");
+            if (IsItem(prefab)) Debug.LogInfo($"[LootReplicator] Mirrored item {packet.PickupId} ({key}) at {packet.Position}.");
+            else Debug.LogTrace($"[LootReplicator] Mirrored pickup {packet.PickupId} ({key}) at {packet.Position}.");
         }
 
         public void HandleLootTaken(ulong senderId, LootTakenPacket packet)

@@ -299,7 +299,9 @@ namespace GungeonTogether.Networking.Replication
         /// <summary>
         /// DungeonDoorController.CheckForPlayerCollision prefix. Like vanilla co-op, the local player
         /// can open a door only while every living partner is next to them, so nobody walks into a
-        /// fight alone. False keeps the door shut.
+        /// fight alone. A partner already through the door counts as next to them: each side opens
+        /// its own copy of a door, and a partner who opened theirs and walked in mustn't leave the
+        /// other one shut out. False keeps the door shut.
         /// </summary>
         public static bool CanOpenDoor(DungeonDoorController door, SpeculativeRigidbody toucher)
         {
@@ -328,10 +330,19 @@ namespace GungeonTogether.Networking.Replication
             Vector2 localPos = local.transform.position;
             // Ghosts too: whoever is spectating comes along, so the fight (and a ghost host, whose
             // room entry wakes the enemies) never splits up.
-            if (AllPartners(pos => Vector2.Distance(pos, localPos) <= DoorPartnerRange, includeGhosts: true)) return true;
+            if (AllPartners(pos => Vector2.Distance(pos, localPos) <= DoorPartnerRange || IsBeyondDoor(gm, door, local, pos), includeGhosts: true)) return true;
 
             ShowWaitingHint(local);
             return false;
+        }
+
+        /// <summary>Whether a partner at this spot is in the room on the other side of the door.</summary>
+        private static bool IsBeyondDoor(GameManager gm, DungeonDoorController door, PlayerController local, Vector2 partnerPos)
+        {
+            if (gm.Dungeon == null || gm.Dungeon.data == null) return false;
+            var partnerRoom = gm.Dungeon.data.GetAbsoluteRoomFromPosition(partnerPos.ToIntVector2(VectorConversions.Floor));
+            return partnerRoom != null && partnerRoom != local.CurrentRoom
+                && (partnerRoom == door.upstreamRoom || partnerRoom == door.downstreamRoom);
         }
 
         /// <summary>

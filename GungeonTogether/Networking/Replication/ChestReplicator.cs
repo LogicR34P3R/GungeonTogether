@@ -93,7 +93,15 @@ namespace GungeonTogether.Networking.Replication
             if (!NetworkSession.Instance.IsHost) return;
 
             if (chest.IsMimic) SendState(chest, ChestState.BecameMimic);
-            else if (chest.IsOpen) SendState(chest, ChestState.Opened);
+            else if (chest.IsOpen)
+            {
+                SendState(chest, ChestState.Opened);
+                // Diagnostics: a client saw only part of a chest's loot. Compare with the
+                // [LootReplicator] lines on both sides.
+                var ids = new List<string>();
+                if (chest.contents != null) foreach (PickupObject item in chest.contents) ids.Add(item != null ? item.PickupObjectId.ToString() : "null");
+                Debug.LogInfo($"[ChestReplicator] Host opened chest at {chest.transform.position}: items [{string.Join(", ", ids.ToArray())}].");
+            }
         }
 
         /// <summary>Chest.OnBroken postfix.</summary>

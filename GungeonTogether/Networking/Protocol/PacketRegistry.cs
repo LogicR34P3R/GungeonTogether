@@ -52,6 +52,8 @@ namespace GungeonTogether.Networking.Protocol
             { PacketType.EnemyHit, typeof(EnemyHitPacket) },
             { PacketType.Goop, typeof(GoopPacket) },
             { PacketType.Beam, typeof(BeamPacket) },
+            { PacketType.SkyRocket, typeof(SkyRocketPacket) },
+            { PacketType.Pedestal, typeof(PedestalPacket) },
         };
 
         public static INetworkPacket Create(PacketType type)

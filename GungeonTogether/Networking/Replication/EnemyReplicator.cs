@@ -67,6 +67,8 @@ namespace GungeonTogether.Networking.Replication
         private readonly Dictionary<string, bool> _pendingSealStates = new Dictionary<string, bool>();
         // Rooms we sealed because the host did - unsealed again if the session ends mid-fight.
         private readonly List<RoomHandler> _networkSealedRooms = new List<RoomHandler>();
+        // Rooms the host sealed while this client was still outside - sealed here once it walks in.
+        private readonly List<RoomHandler> _heldSeals = new List<RoomHandler>();
 
         // Client side: every puppet, including native bosses awaiting adoption - see EnforcePuppets.
         private static readonly List<AIActor> _puppets = new List<AIActor>();
@@ -89,6 +91,8 @@ namespace GungeonTogether.Networking.Replication
                 RoomHandler room = CurrentRoom();
                 if (room != null) RemoveNativeEnemies(room);
                 EnforcePuppets();
+                HideEmptiedBossBars();
+                ApplyHeldSeal(room);
                 ReportRoomChange(room);
             }
         }
@@ -163,10 +167,13 @@ namespace GungeonTogether.Networking.Replication
             // Rooms and enemies from the previous level are gone.
             _hostSealedRoom = null;
             _networkSealedRooms.Clear();
+            _heldSeals.Clear();
             _synced.Clear();
             _dyingSince.Clear();
             _clientRooms.Clear();
             _bossBars.Clear();
+            if (_hideBossBarsAt >= 0f) HideBossHealthBars(); // left the floor before it was hidden
+            _hideBossBarsAt = -1f;
             _currentRoomName = "";
             _reportedRoom = null;
             NetworkEntityManager.Instance.Clear();
@@ -644,17 +651,41 @@ namespace GungeonTogether.Networking.Replication
             bar.RegisterBossHealthHaver(health, bossName);
         }
 
-        /// <summary>One boss's bar goes; the rest stay up while another boss (e.g. the other twin) lives.</summary>
+        // How long an emptied bar stays on screen before it's hidden, so the drop to 0 is seen.
+        private const float EmptyBarSeconds = 2f;
+        private static float _hideBossBarsAt = -1f;
+
+        /// <summary>
+        /// A dying boss's bar drops to 0 (deregistering does that); the rest stay up while another
+        /// boss (e.g. the other twin) lives. Once none is left, the bar is hidden a moment later.
+        /// </summary>
+        private static void EmptyBossBar(HealthHaver health)
+        {
+            if (!_bossBars.Remove(health)) return;
+            GameUIRoot ui = GameUIRoot.HasInstance ? GameUIRoot.Instance : null;
+            if (ui != null)
+            {
+                if (ui.bossController != null) ui.bossController.DeregisterBossHealthHaver(health);
+                if (ui.bossController2 != null) ui.bossController2.DeregisterBossHealthHaver(health);
+                if (ui.bossControllerSide != null) ui.bossControllerSide.DeregisterBossHealthHaver(health);
+            }
+            _bossBars.RemoveWhere(h => h == null);
+            if (_bossBars.Count == 0) _hideBossBarsAt = Time.realtimeSinceStartup + EmptyBarSeconds;
+        }
+
+        /// <summary>The boss is gone: empty its bar if that hasn't happened yet.</summary>
         private static void RemoveBossBar(HealthHaver health)
         {
-            _bossBars.Remove(health);
-            GameUIRoot ui = GameUIRoot.HasInstance ? GameUIRoot.Instance : null;
-            if (ui == null) return;
-            if (ui.bossController != null) ui.bossController.DeregisterBossHealthHaver(health);
-            if (ui.bossController2 != null) ui.bossController2.DeregisterBossHealthHaver(health);
-            if (ui.bossControllerSide != null) ui.bossControllerSide.DeregisterBossHealthHaver(health);
-
+            EmptyBossBar(health);
             _bossBars.RemoveWhere(h => h == null);
+            if (_bossBars.Count == 0 && _hideBossBarsAt < 0f) _hideBossBarsAt = Time.realtimeSinceStartup + EmptyBarSeconds;
+        }
+
+        /// <summary>Client: hides the emptied boss bar once its moment on screen is over.</summary>
+        private static void HideEmptiedBossBars()
+        {
+            if (_hideBossBarsAt < 0f || Time.realtimeSinceStartup < _hideBossBarsAt) return;
+            _hideBossBarsAt = -1f;
             if (_bossBars.Count == 0) HideBossHealthBars();
         }
 
@@ -722,6 +753,12 @@ namespace GungeonTogether.Networking.Replication
                 if (Mathf.Abs(health.GetCurrentHealth() - packet.Health) > 0.5f) health.ForceSetCurrentHealth(packet.Health);
                 AIActor bossActor = remote.GetComponent<AIActor>();
                 if (bossActor != null) ShowBossBar(bossActor, health);
+            }
+            // Dead on the host but still playing its death: its health (0) is skipped above, so the
+            // bar would stay at its last sliver. Empty it now, as the game does when a boss dies.
+            else if (health != null && health.IsBoss && (packet.Dying || (packet.MaxHealth > 0 && packet.Health <= 0)))
+            {
+                EmptyBossBar(health);
             }
         }
 
@@ -856,7 +893,9 @@ namespace GungeonTogether.Networking.Replication
         {
             GameManager gm = GameManager.Instance;
             if (gm == null || gm.Dungeon == null) return;
-            HideBossHealthBars();
+            // Every boss is dead (a twin may still be playing its death): empty the bar, hide it shortly.
+            foreach (HealthHaver boss in new List<HealthHaver>(_bossBars)) EmptyBossBar(boss);
+            if (_hideBossBarsAt < 0f) _hideBossBarsAt = Time.realtimeSinceStartup + EmptyBarSeconds;
             gm.Dungeon.FloorCleared();
             Debug.LogInfo("[EnemyReplicator] Floor cleared by the host.");
             PlayerLifeReplicator.Instance.OnFloorCleared();
@@ -893,8 +932,11 @@ namespace GungeonTogether.Networking.Replication
 
         /// <summary>
         /// Mirrors the host's doors. The client's own rooms never seal by themselves (no local
-        /// RoomClear enemies), so this is the only thing locking them. Nobody is warped in: doors
-        /// wait for both players, so a client outside a sealing room chose to stay out.
+        /// RoomClear enemies), so this is the only thing locking them. Nobody is warped in, so a
+        /// room the host sealed while this client was still outside - typically a step behind it
+        /// in the doorway - stays open here until the client walks in (ApplyHeldSeal), the way a
+        /// room seals behind the player who enters it. Shutting it at once locked the client out
+        /// of the fight.
         /// </summary>
         private void ApplySealState(string roomName, bool isSealed)
         {
@@ -904,6 +946,13 @@ namespace GungeonTogether.Networking.Replication
                 Debug.Log($"[EnemyReplicator] Seal state for unknown room {roomName} (layout mismatch?) - ignored.");
                 return;
             }
+            if (isSealed && CurrentRoom() != room)
+            {
+                if (!_heldSeals.Contains(room)) _heldSeals.Add(room);
+                Debug.Log($"[EnemyReplicator] Host sealed {roomName} while we're outside; it seals here once we're in.");
+                return;
+            }
+            _heldSeals.Remove(room);
             if (isSealed && !room.IsSealed)
             {
                 room.SealRoom();
@@ -914,6 +963,13 @@ namespace GungeonTogether.Networking.Replication
                 _networkSealedRooms.Remove(room); // first: AllowUnseal blocks rooms still in the list
                 room.UnsealRoom();
             }
+        }
+
+        /// <summary>Client: seals a room the host sealed earlier, now that we've walked into it.</summary>
+        private void ApplyHeldSeal(RoomHandler room)
+        {
+            if (room == null || _heldSeals.Count == 0 || !_heldSeals.Contains(room)) return;
+            ApplySealState(room.GetRoomName(), true);
         }
 
         /// <summary>
@@ -935,6 +991,7 @@ namespace GungeonTogether.Networking.Replication
             if (player != null) player.OnRoomCleared();
 
             // Normally a RoomSealState(false) handles this; belt and braces in case it was missed.
+            _heldSeals.Remove(room);
             if (room != null && room.IsSealed)
             {
                 _networkSealedRooms.Remove(room); // first: see AllowUnseal
@@ -973,11 +1030,13 @@ namespace GungeonTogether.Networking.Replication
             _dyingSince.Clear();
             _clientRooms.Clear();
             _bossBars.Clear();
+            _hideBossBarsAt = -1f;
             _hostSealedRoom = null;
             _hostRoomName = "";
             _reportedRoom = null;
             _pendingSpawns.Clear();
             _pendingSealStates.Clear();
+            _heldSeals.Clear();
             _puppets.Clear();
         }
     }

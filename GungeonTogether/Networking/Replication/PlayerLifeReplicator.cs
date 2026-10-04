@@ -44,6 +44,15 @@ namespace GungeonTogether.Networking.Replication
         public bool IsAlive(ulong playerId) =>
             !_remoteStates.TryGetValue(playerId, out PlayerLifeState state) || state == PlayerLifeState.Alive;
 
+        /// <summary>
+        /// HealthHaver.BossHealthSanityCheck postfix. The game refuses the killing blow on a boss
+        /// while the primary player is dead and no local co-op partner lives, so a dead host
+        /// (ghost) made every boss unkillable for its clients: their hits arrive as host damage.
+        /// A living partner counts as that second player.
+        /// </summary>
+        public static bool AllowBossDamage(bool allowed) =>
+            allowed || (NetworkSession.Instance.IsHost && Instance.AnyPartnerAlive());
+
         private void Update()
         {
             GameManager gm = GameManager.HasInstance ? GameManager.Instance : null;

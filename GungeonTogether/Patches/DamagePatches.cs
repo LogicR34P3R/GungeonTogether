@@ -17,4 +17,14 @@ namespace GungeonTogether.Patches
             CoreDamageTypes damageTypes, DamageCategory damageCategory) =>
             DamageReplicator.OnApplyDamage(__instance, damage, direction, damageTypes, damageCategory);
     }
+
+    /// <summary>
+    /// Lets a client land the killing blow on a boss while the host is dead (see
+    /// PlayerLifeReplicator.AllowBossDamage). Only turns a refusal into a yes.
+    /// </summary>
+    [HarmonyPatch(typeof(HealthHaver), "BossHealthSanityCheck")]
+    internal static class HealthHaver_BossHealthSanityCheck_Patch
+    {
+        private static void Postfix(ref bool __result) => __result = PlayerLifeReplicator.AllowBossDamage(__result);
+    }
 }

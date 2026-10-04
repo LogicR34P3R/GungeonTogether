@@ -59,7 +59,9 @@ namespace GungeonTogether.Networking.Session
         // 30: added EnemyHit (melee/leap/grab on a client), Goop (enemy goop), Beam (enemy lasers).
         // 31: EnemyProjectile.Radius + SpinHold/SpinRelease kinds, Explosion effect name, Goop arc curve.
         // 32: PlayerPosition.SpriteCollection (sheet of the frame) replaces AltCostume.
-        public const int ProtocolVersion = 33;
+        // 34: added SkyRocket (Gatling Gull rockets on clients).
+        // 35: added Pedestal (boss reward pedestals).
+        public const int ProtocolVersion = 35;
 
         // Liveness must not depend on gameplay traffic: position packets stop whenever there's no
         // PrimaryPlayer (e.g. mid level load), which would otherwise trip PeerConnection's timeout.
@@ -221,6 +223,8 @@ namespace GungeonTogether.Networking.Session
             EnemyHitReplicator.Instance.ResetSessionState();
             GoopReplicator.Instance.ResetSessionState();
             BeamReplicator.Instance.ResetSessionState();
+            SkyRocketReplicator.Instance.ResetSessionState();
+            PedestalReplicator.Instance.ResetSessionState();
             DamageReplicator.Instance.ResetSessionState();
             ScriptReplicator.Instance.ResetSessionState();
             PlayerShotReplicator.Instance.ResetSessionState();
@@ -507,6 +511,15 @@ namespace GungeonTogether.Networking.Session
 
                 case PacketType.Beam:
                     if (IsClient) BeamReplicator.Instance.HandleBeam((BeamPacket)packet);
+                    break;
+
+                case PacketType.SkyRocket:
+                    if (IsClient) SkyRocketReplicator.Instance.HandleSkyRocket((SkyRocketPacket)packet);
+                    break;
+
+                // Both directions: either side can take a pedestal's item; the host relays.
+                case PacketType.Pedestal:
+                    PedestalReplicator.Instance.HandlePedestal(senderId, (PedestalPacket)packet);
                     break;
 
                 // Both directions: the host also relays a client's loot to other clients.

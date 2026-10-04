@@ -44,6 +44,7 @@ namespace GungeonTogether.Networking.Replication
         private class Movable
         {
             public Component Object;
+            public Transform Moved;     // what actually moves (MovedTransform); position, Home and moves are its
             public MovableKind Kind;
             public Vector2 Home;
             public int Serial;          // with Home: the identity (see RoomObjectPacket.Serial)
@@ -87,8 +88,8 @@ namespace GungeonTogether.Networking.Replication
             _nextMoveCheck = now + MoveCheckInterval;
             foreach (Movable m in _movables)
             {
-                if (m.Object == null || m.AlwaysDriven || now < m.DrivenUntil) continue;
-                Vector2 position = m.Object.transform.position;
+                if (m.Object == null || m.Moved == null || m.AlwaysDriven || now < m.DrivenUntil) continue;
+                Vector2 position = m.Moved.position;
                 // A change of animation counts too: a barrel that stops rolling doesn't move any more.
                 // Not for tables: their only animations are flipping and breaking, which have events
                 // of their own. Reporting the flip clip made each side "drive" the other's table
@@ -140,14 +141,14 @@ namespace GungeonTogether.Networking.Replication
         {
             foreach (Movable m in _movables)
             {
-                if (m.Object == null || (!m.AlwaysDriven && now >= m.DrivenUntil)) continue;
+                if (m.Object == null || m.Moved == null || (!m.AlwaysDriven && now >= m.DrivenUntil)) continue;
                 if (m.AlwaysDriven)
                 {
                     // Its own rail logic mustn't move it between the host's updates.
-                    SpeculativeRigidbody body = m.Object.GetComponent<SpeculativeRigidbody>();
+                    SpeculativeRigidbody body = m.Moved.GetComponent<SpeculativeRigidbody>();
                     if (body != null) body.Velocity = Vector2.zero;
                 }
-                Vector2 current = m.Object.transform.position;
+                Vector2 current = m.Moved.position;
                 if (Vector2.Distance(current, m.Target) < 0.01f) continue;
                 Vector2 next = Vector2.Distance(current, m.Target) > SnapDistance
                     ? m.Target
@@ -190,14 +191,34 @@ namespace GungeonTogether.Networking.Replication
 
         private static void SetPosition(Movable m, Vector2 position)
         {
-            Transform t = m.Object.transform;
+            Transform t = m.Moved;
             t.position = new Vector3(position.x, position.y, t.position.z);
             // The rigidbody keeps its own position and only follows the transform on Reinitialize.
-            SpeculativeRigidbody body = m.Object.GetComponent<SpeculativeRigidbody>();
+            SpeculativeRigidbody body = t.GetComponent<SpeculativeRigidbody>();
             if (body != null) body.Reinitialize();
-            tk2dBaseSprite sprite = m.Object.GetComponent<tk2dBaseSprite>();
+            tk2dBaseSprite sprite = t.GetComponent<tk2dBaseSprite>();
             if (sprite != null) sprite.UpdateZDepth();
+            // A pushed table's shadow follows its sprite (FlippableCover.OnPostMovement does the same).
+            FlippableCover table = m.Object as FlippableCover;
+            if (table != null && table.shadowSprite != null && table.sprite != null)
+            {
+                table.shadowSprite.transform.localPosition = table.sprite.transform.localPosition;
+                table.shadowSprite.UpdateZDepth();
+            }
             m.LastKnown = position;
+        }
+
+        /// <summary>
+        /// The transform that physics moves. A table's rigidbody (and sprite) sit on a child, so a
+        /// push moves that child and the FlippableCover's own transform never changes: watching it,
+        /// no table push was ever reported.
+        /// </summary>
+        private static Transform MovedTransform(Component o)
+        {
+            FlippableCover table = o as FlippableCover;
+            if (table == null) return o.transform;
+            SpeculativeRigidbody body = table.specRigidbody != null ? table.specRigidbody : table.GetComponentInChildren<SpeculativeRigidbody>();
+            return body != null ? body.transform : o.transform;
         }
 
         /// <summary>A new level: forget the old one's objects; ScanMovables finds the new ones.</summary>
@@ -238,8 +259,11 @@ namespace GungeonTogether.Networking.Replication
         private Movable AddMovable(Component o, MovableKind kind, Vector2? home = null, int serial = 0)
         {
             _known.Add(o);
+            // Home (the identity) stays the object's own spot - flips are matched by it too; the
+            // position that moves is Moved's.
             Vector2 start = home ?? (Vector2)o.transform.position;
-            var m = new Movable { Object = o, Kind = kind, Home = start, Serial = serial, LastKnown = o.transform.position, Target = o.transform.position };
+            Transform moved = MovedTransform(o);
+            var m = new Movable { Object = o, Moved = moved, Kind = kind, Home = start, Serial = serial, LastKnown = moved.position, Target = moved.position };
             _movables.Add(m);
             ApplyPending(m);
             return m;
@@ -306,7 +330,7 @@ namespace GungeonTogether.Networking.Replication
             float best = MatchDistance, nearest = float.MaxValue;
             foreach (Movable m in _movables)
             {
-                if (m.Object == null || (byte)m.Kind != packet.MovableKind || m.Serial != packet.Serial) continue;
+                if (m.Object == null || m.Moved == null || (byte)m.Kind != packet.MovableKind || m.Serial != packet.Serial) continue;
                 float distance = Vector2.Distance(m.Home, packet.Position);
                 nearest = Mathf.Min(nearest, distance);
                 if (distance <= best)
@@ -329,7 +353,7 @@ namespace GungeonTogether.Networking.Replication
             // Moved here since our last report: we're moving it ourselves (pushing it) and haven't
             // sent that yet. Ours wins; the other side will get our position next poll.
             if (!match.AlwaysDriven && Time.realtimeSinceStartup >= match.DrivenUntil
-                && Vector2.Distance(match.Object.transform.position, match.LastKnown) >= MoveThreshold)
+                && Vector2.Distance(match.Moved.position, match.LastKnown) >= MoveThreshold)
             {
                 _statMovesIgnored++;
                 return;

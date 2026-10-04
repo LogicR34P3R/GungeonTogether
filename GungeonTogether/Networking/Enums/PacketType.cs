@@ -45,5 +45,7 @@ namespace GungeonTogether.Networking.Enums
         EnemyHit = 40,
         Goop = 41,
         Beam = 42,
+        SkyRocket = 43,
+        Pedestal = 44,
     }
 }

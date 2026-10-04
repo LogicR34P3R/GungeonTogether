@@ -52,6 +52,8 @@ namespace GungeonTogether.Core
                 EnemyHitReplicator.Instance.gameObject.SetActive(true);
                 GoopReplicator.Instance.gameObject.SetActive(true);
                 BeamReplicator.Instance.gameObject.SetActive(true);
+                SkyRocketReplicator.Instance.gameObject.SetActive(true);
+                PedestalReplicator.Instance.gameObject.SetActive(true);
                 GenerationReplicator.Instance.gameObject.SetActive(true);
                 BindSyncOptions();
 
